@@ -4898,16 +4898,6 @@ rd_kafka_broker_t *rd_kafka_broker_add(rd_kafka_t *rk,
         sigset_t newset, oldset;
 #endif
 
-        if (source == RD_KAFKA_LEARNED && rk->rk_conf.runtime_maximum_brokers > 0) {
-                rd_kafka_broker_t *existing;
-                int learned_count=0;
-                TAILQ_FOREACH(existing, &rk->rk_brokers, rkb_link)
-                        if (existing->rkb_source == RD_KAFKA_LEARNED) learned_count++;
-                if (learned_count >= rk->rk_conf.runtime_maximum_brokers) {
-                        rd_kafka_set_fatal_error0(rk, RD_DONT_LOCK, RD_KAFKA_RESP_ERR__CRIT_SYS_RESOURCE, "%s", "Declared broker limit exceeded");
-                        return NULL;
-                }
-        }
         rkb = rd_calloc(1, sizeof(*rkb));
         rkb->rkb_runtime_id = ++rk->rk_runtime_broker_serial;
 

@@ -637,7 +637,7 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
 
         /* Read Brokers */
         rd_kafka_buf_read_arraycnt(rkbuf, &md->broker_cnt,
-                                   rk->rk_conf.runtime_maximum_brokers > 0 ? rk->rk_conf.runtime_maximum_brokers : RD_KAFKAP_BROKERS_MAX);
+                                   RD_KAFKAP_BROKERS_MAX);
 
         if (!(md->brokers = rd_tmpabuf_alloc(&tbuf, md->broker_cnt *
                                                         sizeof(*md->brokers))))
@@ -842,7 +842,7 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
                                 /* #OfflineReplicas */
                                 rd_kafka_buf_read_arraycnt(
                                     rkbuf, &offline_replicas_cnt,
-                                    rk->rk_conf.runtime_maximum_brokers > 0 ? rk->rk_conf.runtime_maximum_brokers : RD_KAFKAP_BROKERS_MAX);
+                                    RD_KAFKAP_BROKERS_MAX);
                                 rd_kafka_buf_skip(rkbuf, offline_replicas_cnt *
                                                              sizeof(int32_t));
                         }
