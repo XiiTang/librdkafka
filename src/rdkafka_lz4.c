@@ -226,6 +226,7 @@ rd_kafka_resp_err_t rd_kafka_lz4_decompress(rd_kafka_broker_t *rkb,
                 estimated_uncompressed_size = (size_t)fi.contentSize;
         }
 
+        if (estimated_uncompressed_size > (size_t)rkb->rkb_rk->rk_conf.recv_max_msg_size) {err=RD_KAFKA_RESP_ERR__BAD_COMPRESSION;goto done;}
         /* Allocate output buffer, we increase this later if needed,
          * but hopefully not. */
         out = rd_malloc(estimated_uncompressed_size);
@@ -275,6 +276,9 @@ rd_kafka_resp_err_t rd_kafka_lz4_decompress(rd_kafka_broker_t *rkb,
                          * for amortized O(1) copying */
                         size_t extra = RD_MAX(outlen * 3 / 4, 1024);
 
+                        size_t maximum=(size_t)rkb->rkb_rk->rk_conf.recv_max_msg_size;
+                        if (outlen >= maximum) {err=RD_KAFKA_RESP_ERR__BAD_COMPRESSION;goto done;}
+                        extra=RD_MIN(extra,maximum-outlen);
                         rd_atomic64_add(&rkb->rkb_c.zbuf_grow, 1);
 
                         if (!(tmp = rd_realloc(out, outlen + extra))) {

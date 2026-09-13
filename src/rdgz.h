@@ -43,4 +43,5 @@ void *rd_gz_decompress(const void *compressed,
                        int compressed_len,
                        uint64_t *decompressed_lenp);
 
+void *rd_gz_decompress_bounded(const void *, int, uint64_t *, uint64_t);
 #endif /* _RDGZ_H_ */

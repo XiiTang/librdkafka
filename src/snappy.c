@@ -1613,9 +1613,9 @@ EXPORT_SYMBOL(rd_kafka_snappy_uncompress);
  *
  * @returns a malloced buffer with the uncompressed data, or NULL on failure.
  */
-char *rd_kafka_snappy_java_uncompress (const char *inbuf, size_t inlen,
+char *rd_kafka_snappy_java_uncompress_bounded (const char *inbuf, size_t inlen,
                                        size_t *outlenp,
-                                       char *errstr, size_t errstr_size) {
+                                       char *errstr, size_t errstr_size, size_t maximum) {
         int pass;
         char *outbuf = NULL;
 
@@ -1660,6 +1660,10 @@ char *rd_kafka_snappy_java_uncompress (const char *inbuf, size_t inlen,
                                 return NULL;
                         }
 
+                        if (ulen > maximum || (size_t)uof > maximum - ulen) {
+                                rd_snprintf(errstr,errstr_size,"Snappy output exceeds declared maximum");
+                                if (outbuf) rd_free(outbuf); return NULL;
+                        }
                         if (pass == 1) {
                                 /* pass 1: calculate total length */
                                 of  += clen;
@@ -1864,3 +1868,5 @@ EXPORT_SYMBOL(rd_kafka_snappy_free_env);
 #ifdef __GNUC__
 #pragma GCC diagnostic pop /* -Wcast-align ignore */
 #endif
+
+char *rd_kafka_snappy_java_uncompress(const char *inbuf, size_t inlen, size_t *outlenp, char *errstr, size_t errstr_size) {return rd_kafka_snappy_java_uncompress_bounded(inbuf,inlen,outlenp,errstr,errstr_size,INT_MAX);}

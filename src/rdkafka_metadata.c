@@ -565,6 +565,7 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
         rd_kafka_resp_err_t err       = RD_KAFKA_RESP_ERR_NO_ERROR;
         int broker_changes            = 0;
         int cache_changes             = 0;
+        size_t runtime_items = 0;
         int cgrp_subscription_version = -1;
         int16_t ErrorCode             = 0;
 
@@ -636,7 +637,7 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
 
         /* Read Brokers */
         rd_kafka_buf_read_arraycnt(rkbuf, &md->broker_cnt,
-                                   RD_KAFKAP_BROKERS_MAX);
+                                   rk->rk_conf.runtime_maximum_brokers > 0 ? rk->rk_conf.runtime_maximum_brokers : RD_KAFKAP_BROKERS_MAX);
 
         if (!(md->brokers = rd_tmpabuf_alloc(&tbuf, md->broker_cnt *
                                                         sizeof(*md->brokers))))
@@ -699,6 +700,8 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
 
         /* Read TopicMetadata */
         rd_kafka_buf_read_arraycnt(rkbuf, &md->topic_cnt, RD_KAFKAP_TOPICS_MAX);
+        runtime_items = md->topic_cnt;
+        if (rk->rk_conf.runtime_connect_cb && runtime_items > 4096) rd_kafka_buf_parse_fail(rkbuf, "%s", "Runtime metadata item limit exceeded");
         rd_rkb_dbg(rkb, METADATA, "METADATA", "%i brokers, %i topics",
                    md->broker_cnt, md->topic_cnt);
 
@@ -731,6 +734,8 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
                 /* PartitionMetadata */
                 rd_kafka_buf_read_arraycnt(rkbuf, &md->topics[i].partition_cnt,
                                            RD_KAFKAP_PARTITIONS_MAX);
+                runtime_items += md->topics[i].partition_cnt;
+                if (rk->rk_conf.runtime_connect_cb && runtime_items > 4096) rd_kafka_buf_parse_fail(rkbuf, "%s", "Runtime metadata item limit exceeded");
 
                 if (!(md->topics[i].partitions = rd_tmpabuf_alloc(
                           &tbuf, md->topics[i].partition_cnt *
@@ -837,7 +842,7 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
                                 /* #OfflineReplicas */
                                 rd_kafka_buf_read_arraycnt(
                                     rkbuf, &offline_replicas_cnt,
-                                    RD_KAFKAP_BROKERS_MAX);
+                                    rk->rk_conf.runtime_maximum_brokers > 0 ? rk->rk_conf.runtime_maximum_brokers : RD_KAFKAP_BROKERS_MAX);
                                 rd_kafka_buf_skip(rkbuf, offline_replicas_cnt *
                                                              sizeof(int32_t));
                         }

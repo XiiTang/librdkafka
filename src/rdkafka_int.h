@@ -290,6 +290,7 @@ struct rd_kafka_s {
         TAILQ_HEAD(, rd_kafka_broker_s) rk_brokers;
         rd_list_t rk_broker_by_id; /* Fast id lookups. */
         rd_atomic32_t rk_broker_cnt;
+        uint64_t rk_runtime_broker_serial; /* protected by rk write lock */
         /**  Logical brokers count.
          *   Used for calculating ERR__ALL_BROKERS_DOWN. */
         rd_atomic32_t rk_logical_broker_cnt;

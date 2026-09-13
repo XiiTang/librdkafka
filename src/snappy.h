@@ -59,4 +59,6 @@ size_t rd_kafka_snappy_max_compressed_length(size_t source_len);
 
 
 
+char *rd_kafka_snappy_java_uncompress_bounded(const char *,size_t,size_t *,char *,size_t,size_t);
+
 #endif

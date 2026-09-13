@@ -1153,7 +1153,12 @@ rd_kafka_transport_t *rd_kafka_transport_connect(rd_kafka_broker_t *rkb,
                    rd_kafka_secproto_names[rkb->rkb_proto], s);
 
         /* Connect to broker */
-        if (rkb->rkb_rk->rk_conf.connect_cb) {
+        if (rkb->rkb_rk->rk_conf.runtime_connect_cb) {
+                rd_kafka_broker_lock(rkb);
+                r = rkb->rkb_rk->rk_conf.runtime_connect_cb(s, rkb->rkb_nodename,
+                    rkb->rkb_runtime_id, rkb->rkb_rk->rk_conf.opaque);
+                rd_kafka_broker_unlock(rkb);
+        } else if (rkb->rkb_rk->rk_conf.connect_cb) {
                 rd_kafka_broker_lock(rkb); /* for rkb_nodename */
                 r = rkb->rkb_rk->rk_conf.connect_cb(
                     s, (struct sockaddr *)sinx, RD_SOCKADDR_INX_LEN(sinx),

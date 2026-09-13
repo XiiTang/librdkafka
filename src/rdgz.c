@@ -34,9 +34,9 @@
 
 #define RD_GZ_CHUNK 262144
 
-void *rd_gz_decompress(const void *compressed,
+void *rd_gz_decompress_bounded(const void *compressed,
                        int compressed_len,
-                       uint64_t *decompressed_lenp) {
+                       uint64_t *decompressed_lenp, uint64_t maximum) {
         int pass           = 1;
         char *decompressed = NULL;
 
@@ -46,8 +46,7 @@ void *rd_gz_decompress(const void *compressed,
          * Second pass (2): perform actual decompression.
          */
 
-        if (*decompressed_lenp != 0LLU)
-                pass++;
+        *decompressed_lenp = 0;
 
         for (; pass <= 2; pass++) {
                 z_stream strm = RD_ZERO_INIT;
@@ -77,6 +76,7 @@ void *rd_gz_decompress(const void *compressed,
                         strm.avail_out = len;
 
                         r = inflate(&strm, Z_NO_FLUSH);
+                        if (strm.total_out > maximum) { inflateEnd(&strm); goto fail; }
                         switch (r) {
                         case Z_STREAM_ERROR:
                         case Z_NEED_DICT:
@@ -118,3 +118,5 @@ fail:
                 rd_free(decompressed);
         return NULL;
 }
+
+void *rd_gz_decompress(const void *input, int length, uint64_t *output_length) { return rd_gz_decompress_bounded(input,length,output_length,INT_MAX); }

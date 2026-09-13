@@ -81,6 +81,7 @@ typedef struct rd_kafka_broker_monitor_s {
 struct rd_kafka_broker_s { /* rd_kafka_broker_t */
         TAILQ_ENTRY(rd_kafka_broker_s) rkb_link;
 
+        uint64_t rkb_runtime_id;
         int32_t rkb_nodeid; /**< Broker Node Id, read only. */
 #define RD_KAFKA_NODEID_UA -1
 

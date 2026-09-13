@@ -10678,6 +10678,10 @@ rd_kafka_error_t *rd_kafka_abort_transaction(rd_kafka_t *rk, int timeout_ms);
 
 /**@}*/
 
+/** Caller-owned transport hook. The stable instance identifier distinguishes
+ * additional brokers from reconnection of an existing broker. */
+RD_EXPORT void rd_kafka_conf_set_runtime_connect_cb(rd_kafka_conf_t *, int (*)(int,const char *,uint64_t,void *));
+
 /* @cond NO_DOC */
 #ifdef __cplusplus
 }

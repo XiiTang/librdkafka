@@ -287,8 +287,8 @@ rd_kafka_msgset_reader_decompress(rd_kafka_msgset_reader_t *msetr,
                 uint64_t outlenx = 0;
 
                 /* Decompress Message payload */
-                iov.iov_base = rd_gz_decompress(compressed,
-                                                (int)compressed_size, &outlenx);
+                iov.iov_base = rd_gz_decompress_bounded(compressed,
+                                                (int)compressed_size, &outlenx, msetr->msetr_rkb->rkb_rk->rk_conf.recv_max_msg_size);
                 if (unlikely(!iov.iov_base)) {
                         rd_rkb_dbg(msetr->msetr_rkb, MSG, "GZIP",
                                    "Failed to decompress Gzip "
@@ -327,8 +327,8 @@ rd_kafka_msgset_reader_decompress(rd_kafka_msgset_reader_t *msetr,
 
                         inbuf = inbuf + snappy_java_hdrlen;
                         inlen -= snappy_java_hdrlen;
-                        iov.iov_base = rd_kafka_snappy_java_uncompress(
-                            inbuf, inlen, &iov.iov_len, errstr, sizeof(errstr));
+                        iov.iov_base = rd_kafka_snappy_java_uncompress_bounded(
+                            inbuf, inlen, &iov.iov_len, errstr, sizeof(errstr), msetr->msetr_rkb->rkb_rk->rk_conf.recv_max_msg_size);
 
                         if (unlikely(!iov.iov_base)) {
                                 rd_rkb_dbg(msetr->msetr_rkb, MSG, "SNAPPY",
@@ -364,6 +364,7 @@ rd_kafka_msgset_reader_decompress(rd_kafka_msgset_reader_t *msetr,
                                 goto err;
                         }
 
+                        if (iov.iov_len > (size_t)msetr->msetr_rkb->rkb_rk->rk_conf.recv_max_msg_size) {err=RD_KAFKA_RESP_ERR__BAD_COMPRESSION; goto err;}
                         /* Allocate output buffer for uncompressed data */
                         iov.iov_base = rd_malloc(iov.iov_len);
                         if (unlikely(!iov.iov_base)) {
@@ -910,6 +911,12 @@ rd_kafka_msgset_reader_msg_v2(rd_kafka_msgset_reader_t *msetr) {
         rd_kafka_buf_read_kbytes_varint(rkbuf, &hdr.Key);
         rd_kafka_buf_read_kbytes_varint(rkbuf, &hdr.Value);
 
+        if (msetr->msetr_rkb->rkb_rk->rk_conf.runtime_connect_cb) {
+                rd_slice_t saved_reader=rkbuf->rkbuf_reader; int64_t count;
+                rd_kafka_buf_read_varint(rkbuf, &count);
+                if (count < 0 || count > 128) rd_kafka_buf_parse_fail(rkbuf, "%s", "Runtime record header limit exceeded");
+                rkbuf->rkbuf_reader=saved_reader;
+        }
         /* We parse the Headers later, just store the size (possibly truncated)
          * and pointer to the headers. */
         hdr.Headers.len =
