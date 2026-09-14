@@ -10683,6 +10683,19 @@ rd_kafka_error_t *rd_kafka_abort_transaction(rd_kafka_t *rk, int timeout_ms);
 RD_EXPORT void rd_kafka_conf_set_runtime_connect_cb(rd_kafka_conf_t *, int (*)(int,const char *,uint64_t,void *));
 
 /* @cond NO_DOC */
+/** Runtime-only SASL callback: 0=start, 1=challenge, 2=destroy. Invoked on a
+ * native broker thread. No callback falls back to an OS SASL provider. The
+ * caller owns *state; destroy is always called if start assigned it. Token
+ * output has a fixed 64 KiB bound and is wiped after native framing copies it.
+ * complete means the local exchange is complete; peer success is still required.
+ */
+typedef int (*rd_kafka_runtime_sasl_cb_t)(int action, const char *broker,
+    const unsigned char *input, size_t input_len, void **state,
+    unsigned char *output, size_t capacity, size_t *output_len,
+    int *complete, void *opaque);
+RD_EXPORT void rd_kafka_conf_set_runtime_sasl_cb(rd_kafka_conf_t *conf,
+    rd_kafka_runtime_sasl_cb_t callback);
+
 #ifdef __cplusplus
 }
 #endif

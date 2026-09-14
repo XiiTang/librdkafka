@@ -700,6 +700,7 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
     {_RK_GLOBAL, "background_event_cb", _RK_C_PTR, _RK(background_event_cb),
      "Background queue event callback "
      "(set with rd_kafka_conf_set_background_event_cb())"},
+    {_RK_GLOBAL, "runtime_sasl_cb", _RK_C_PTR, _RK(runtime_sasl_cb), "Caller-owned SASL exchange"},
     {_RK_GLOBAL, "runtime_connect_cb", _RK_C_PTR, _RK(runtime_connect_cb), "Caller transport connection hook with stable broker instance identity"},
     {_RK_GLOBAL, "socket_cb", _RK_C_PTR, _RK(socket_cb),
      "Socket creation callback to provide race-free CLOEXEC",
@@ -4882,4 +4883,8 @@ int unittest_conf(void) {
 
 void rd_kafka_conf_set_runtime_connect_cb(rd_kafka_conf_t *conf, int (*callback)(int,const char *,uint64_t,void *)) {
     rd_kafka_anyconf_set_internal(_RK_GLOBAL, conf, "runtime_connect_cb", callback);
+}
+
+void rd_kafka_conf_set_runtime_sasl_cb(rd_kafka_conf_t *conf, rd_kafka_runtime_sasl_cb_t callback) {
+    rd_kafka_anyconf_set_internal(_RK_GLOBAL, conf, "runtime_sasl_cb", callback);
 }

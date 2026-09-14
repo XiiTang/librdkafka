@@ -369,6 +369,61 @@ rd_bool_t rd_kafka_sasl_ready(rd_kafka_t *rk) {
 }
 
 
+/* Callback-backed GSSAPI is deliberately independent of Cyrus/SSPI and their
+ * system caches, keytabs, credential refresh and native KDC networking. */
+struct runtime_sasl_state { void *exchange; int complete; };
+static int runtime_sasl_step(rd_kafka_transport_t *transport, int start,
+                            const void *input, size_t len,
+                            char *errstr, size_t errstr_size) {
+    rd_kafka_t *rk = transport->rktrans_rkb->rkb_rk;
+    struct runtime_sasl_state *state = transport->rktrans_sasl.state;
+    unsigned char *output;
+    size_t output_len = 0, i;
+    int result;
+    if (len > 65536) goto fail;
+    if (!start && state->complete) {
+        if (len) goto fail;
+        rd_kafka_sasl_auth_done(transport);
+        return 0;
+    }
+    output = rd_malloc(65536);
+    result = rk->rk_conf.runtime_sasl_cb(start ? 0 : 1,
+        transport->rktrans_rkb->rkb_nodename, input, len, &state->exchange,
+        output, 65536, &output_len, &state->complete, rk->rk_conf.opaque);
+    if (!result && output_len <= 65536)
+        result = rd_kafka_sasl_send(transport, output, (int)output_len, errstr, errstr_size);
+    else result = -1;
+    for (i=0; i<65536; i++) ((volatile unsigned char *)output)[i]=0;
+    rd_free(output);
+    if (result) goto fail;
+    transport->rktrans_sasl.complete = state->complete;
+    return 0;
+fail:
+    rd_snprintf(errstr, errstr_size, "Caller-owned SASL exchange failed");
+    return -1;
+}
+static int runtime_sasl_new(rd_kafka_transport_t *transport, const char *hostname,
+                            char *errstr, size_t errstr_size) {
+    transport->rktrans_sasl.state = rd_calloc(1, sizeof(struct runtime_sasl_state));
+    return runtime_sasl_step(transport, 1, NULL, 0, errstr, errstr_size);
+}
+static int runtime_sasl_recv(rd_kafka_transport_t *transport, const void *input,
+                             size_t len, char *errstr, size_t errstr_size) {
+    return runtime_sasl_step(transport, 0, input, len, errstr, errstr_size);
+}
+static void runtime_sasl_close(rd_kafka_transport_t *transport) {
+    struct runtime_sasl_state *state = transport->rktrans_sasl.state;
+    rd_kafka_t *rk = transport->rktrans_rkb->rkb_rk;
+    if (!state) return;
+    rk->rk_conf.runtime_sasl_cb(2, NULL, NULL, 0, &state->exchange, NULL, 0, NULL, NULL, rk->rk_conf.opaque);
+    rd_free(state);
+    transport->rktrans_sasl.state = NULL;
+}
+static const struct rd_kafka_sasl_provider runtime_sasl_provider = {
+    .name="Caller-owned GSSAPI", .client_new=runtime_sasl_new,
+    .recv=runtime_sasl_recv, .close=runtime_sasl_close
+};
+
 /**
  * @brief Select SASL provider for configured mechanism (singularis)
  * @returns 0 on success or -1 on failure.
@@ -378,7 +433,13 @@ int rd_kafka_sasl_select_provider(rd_kafka_t *rk,
                                   size_t errstr_size) {
         const struct rd_kafka_sasl_provider *provider = NULL;
 
-        if (!strcmp(rk->rk_conf.sasl.mechanisms, "GSSAPI")) {
+        if (rk->rk_conf.runtime_sasl_cb) {
+                if (strcmp(rk->rk_conf.sasl.mechanisms, "GSSAPI")) {
+                        rd_snprintf(errstr, errstr_size, "Caller-owned SASL requires explicit GSSAPI");
+                        return -1;
+                }
+                provider = &runtime_sasl_provider;
+        } else if (!strcmp(rk->rk_conf.sasl.mechanisms, "GSSAPI")) {
                 /* GSSAPI / Kerberos */
 #ifdef _WIN32
                 provider = &rd_kafka_sasl_win32_provider;
