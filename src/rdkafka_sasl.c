@@ -266,6 +266,12 @@ int rd_kafka_sasl_client_new(rd_kafka_transport_t *rktrans,
         rd_strdupa(&hostname, rktrans->rktrans_rkb->rkb_nodename);
         rd_kafka_broker_unlock(rktrans->rktrans_rkb);
 
+        if (rk->rk_conf.runtime_sasl_admit_cb &&
+            rk->rk_conf.runtime_sasl_admit_cb(hostname, rk->rk_conf.opaque)) {
+                rd_snprintf(errstr, errstr_size, "Caller refused SASL authentication");
+                return -1;
+        }
+
         if ((t = strchr(hostname, ':')))
                 *t = '\0'; /* remove ":port" */
 

@@ -10682,6 +10682,12 @@ rd_kafka_error_t *rd_kafka_abort_transaction(rd_kafka_t *rk, int timeout_ms);
  * additional brokers from reconnection of an existing broker. */
 RD_EXPORT void rd_kafka_conf_set_runtime_connect_cb(rd_kafka_conf_t *, int (*)(int,const char *,uint64_t,void *));
 
+/** Optional admission hook before each SASL exchange, including in-place
+ * reauthentication. Return zero to proceed or nonzero to refuse before the
+ * provider reads credentials or emits a token. Runs on the broker thread. */
+RD_EXPORT void rd_kafka_conf_set_runtime_sasl_admit_cb(rd_kafka_conf_t *,
+    int (*)(const char *broker, void *opaque));
+
 /* @cond NO_DOC */
 /** Runtime-only SASL callback: 0=start, 1=challenge, 2=destroy. Invoked on a
  * native broker thread. No callback falls back to an OS SASL provider. The

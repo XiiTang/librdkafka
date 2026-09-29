@@ -247,6 +247,7 @@ struct rd_kafka_conf_s {
         int socket_max_fails;
         int (*runtime_connect_cb)(int, const char *, uint64_t, void *);
         rd_kafka_runtime_sasl_cb_t runtime_sasl_cb;
+        int (*runtime_sasl_admit_cb)(const char *, void *);
         char *client_id_str;
         char *brokerlist;
         int stats_interval_ms;
