@@ -375,8 +375,9 @@ rd_bool_t rd_kafka_sasl_ready(rd_kafka_t *rk) {
 }
 
 
-/* Callback-backed GSSAPI is deliberately independent of Cyrus/SSPI and their
- * system caches, keytabs, credential refresh and native KDC networking. */
+/* Every SASL mechanism is a caller-owned exchange, independent of the native
+ * engines and of Cyrus/SSPI system caches, keytabs and KDC networking.
+ * librdkafka frames each token and schedules reauthentication. */
 struct runtime_sasl_state { void *exchange; int complete; };
 static int runtime_sasl_step(rd_kafka_transport_t *transport, int start,
                             const void *input, size_t len,
@@ -426,7 +427,7 @@ static void runtime_sasl_close(rd_kafka_transport_t *transport) {
     transport->rktrans_sasl.state = NULL;
 }
 static const struct rd_kafka_sasl_provider runtime_sasl_provider = {
-    .name="Caller-owned GSSAPI", .client_new=runtime_sasl_new,
+    .name="Caller-owned SASL", .client_new=runtime_sasl_new,
     .recv=runtime_sasl_recv, .close=runtime_sasl_close
 };
 
@@ -437,72 +438,18 @@ static const struct rd_kafka_sasl_provider runtime_sasl_provider = {
 int rd_kafka_sasl_select_provider(rd_kafka_t *rk,
                                   char *errstr,
                                   size_t errstr_size) {
-        const struct rd_kafka_sasl_provider *provider = NULL;
+        const struct rd_kafka_sasl_provider *provider;
 
-        if (rk->rk_conf.runtime_sasl_cb) {
-                if (strcmp(rk->rk_conf.sasl.mechanisms, "GSSAPI")) {
-                        rd_snprintf(errstr, errstr_size, "Caller-owned SASL requires explicit GSSAPI");
-                        return -1;
-                }
-                provider = &runtime_sasl_provider;
-        } else if (!strcmp(rk->rk_conf.sasl.mechanisms, "GSSAPI")) {
-                /* GSSAPI / Kerberos */
-#ifdef _WIN32
-                provider = &rd_kafka_sasl_win32_provider;
-#elif WITH_SASL_CYRUS
-                provider = &rd_kafka_sasl_cyrus_provider;
-#endif
-
-        } else if (!strcmp(rk->rk_conf.sasl.mechanisms, "PLAIN")) {
-                /* SASL PLAIN */
-                provider = &rd_kafka_sasl_plain_provider;
-
-        } else if (!strncmp(rk->rk_conf.sasl.mechanisms, "SCRAM-SHA-",
-                            strlen("SCRAM-SHA-"))) {
-                /* SASL SCRAM */
-#if WITH_SASL_SCRAM
-                provider = &rd_kafka_sasl_scram_provider;
-#endif
-
-        } else if (!strcmp(rk->rk_conf.sasl.mechanisms, "OAUTHBEARER")) {
-                /* SASL OAUTHBEARER */
-#if WITH_SASL_OAUTHBEARER
-                provider = &rd_kafka_sasl_oauthbearer_provider;
-#endif
-        } else {
-                /* Unsupported mechanism */
+        /* The embedding application owns every SASL mechanism: native
+         * PLAIN, SCRAM, OAUTHBEARER, Cyrus and SSPI engines are unreachable,
+         * so peer-controlled challenges never reach their stack buffers and
+         * no locally derived proof reaches an error string. */
+        if (!rk->rk_conf.runtime_sasl_cb) {
                 rd_snprintf(errstr, errstr_size,
-                            "Unsupported SASL mechanism: %s",
-                            rk->rk_conf.sasl.mechanisms);
+                            "SASL requires a caller-owned exchange");
                 return -1;
         }
-
-        if (!provider) {
-                rd_snprintf(errstr, errstr_size,
-                            "No provider for SASL mechanism %s"
-                            ": recompile librdkafka with "
-#ifndef _WIN32
-                            "libsasl2 or "
-#endif
-                            "openssl support. "
-                            "Current build options:"
-                            " PLAIN"
-#ifdef _WIN32
-                            " WindowsSSPI(GSSAPI)"
-#endif
-#if WITH_SASL_CYRUS
-                            " SASL_CYRUS"
-#endif
-#if WITH_SASL_SCRAM
-                            " SASL_SCRAM"
-#endif
-#if WITH_SASL_OAUTHBEARER
-                            " OAUTHBEARER"
-#endif
-                            ,
-                            rk->rk_conf.sasl.mechanisms);
-                return -1;
-        }
+        provider = &runtime_sasl_provider;
 
         rd_kafka_dbg(rk, SECURITY, "SASL",
                      "Selected provider %s for SASL mechanism %s",
