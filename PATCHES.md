@@ -28,5 +28,7 @@ never reaches their stack buffers (SCRAM's `AuthMessage` and salt are sized by
 the peer) and no locally derived proof reaches an error string. librdkafka
 still sends the configured `sasl.mechanisms` name in SaslHandshake, frames each
 token, bounds every token in either direction to 65536 bytes, and schedules
-reauthentication from the broker's session lifetime. Callback failures surface
-only as the fixed "Caller-owned SASL exchange failed".
+reauthentication from the broker's session lifetime. A step that consumes the
+peer's final message and completes with no output (SCRAM's server-final) ends
+the exchange without another SaslAuthenticate. Callback failures surface only
+as the fixed "Caller-owned SASL exchange failed".

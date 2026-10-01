@@ -386,7 +386,7 @@ static int runtime_sasl_step(rd_kafka_transport_t *transport, int start,
     struct runtime_sasl_state *state = transport->rktrans_sasl.state;
     unsigned char *output;
     size_t output_len = 0, i;
-    int result;
+    int result, finished;
     if (len > 65536) goto fail;
     if (!start && state->complete) {
         if (len) goto fail;
@@ -397,13 +397,19 @@ static int runtime_sasl_step(rd_kafka_transport_t *transport, int start,
     result = rk->rk_conf.runtime_sasl_cb(start ? 0 : 1,
         transport->rktrans_rkb->rkb_nodename, input, len, &state->exchange,
         output, 65536, &output_len, &state->complete, rk->rk_conf.opaque);
-    if (!result && output_len <= 65536)
+    /* The peer's final message (SCRAM's server-final) can complete the
+     * exchange with nothing left to say: the broker already reported success,
+     * so another SaslAuthenticate would be out of state. */
+    finished = !result && !start && state->complete && !output_len;
+    if (!result && !finished && output_len <= 65536)
         result = rd_kafka_sasl_send(transport, output, (int)output_len, errstr, errstr_size);
-    else result = -1;
+    else if (!finished) result = -1;
     for (i=0; i<65536; i++) ((volatile unsigned char *)output)[i]=0;
     rd_free(output);
     if (result) goto fail;
     transport->rktrans_sasl.complete = state->complete;
+    if (finished)
+        rd_kafka_sasl_auth_done(transport);
     return 0;
 fail:
     rd_snprintf(errstr, errstr_size, "Caller-owned SASL exchange failed");
