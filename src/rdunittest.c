@@ -435,6 +435,24 @@ extern int unittest_telemetry(void);
 extern int unittest_telemetry_decode(void);
 extern int unittest_assignment(void);
 
+static int unittest_atomic_exchange(void) {
+        rd_atomic32_t a32;
+        rd_atomic64_t a64;
+        rd_atomic32_init(&a32, 0);
+        rd_atomic64_init(&a64, 0);
+        RD_UT_ASSERT(rd_atomic32_set(&a32, 1) == 0, "32-bit exchange returns old zero");
+        RD_UT_ASSERT(rd_atomic32_set(&a32, 0) == 1, "32-bit exchange returns old one");
+        RD_UT_ASSERT(rd_atomic64_set(&a64, INT64_MAX) == 0, "64-bit exchange returns old zero");
+        RD_UT_ASSERT(rd_atomic64_set(&a64, 0) == INT64_MAX, "64-bit exchange preserves full width");
+#if !defined(_WIN32) && !HAVE_ATOMICS_32
+        mtx_destroy(&a32.lock);
+#endif
+#if !defined(_WIN32) && !HAVE_ATOMICS_64
+        mtx_destroy(&a64.lock);
+#endif
+        RD_UT_PASS();
+}
+
 int rd_unittest(void) {
         int fails = 0;
         const struct {
@@ -482,6 +500,7 @@ int rd_unittest(void) {
             {"telemetry", unittest_telemetry},
             {"telemetry_decode", unittest_telemetry_decode},
             {"assignment", unittest_assignment},
+            {"atomic_exchange", unittest_atomic_exchange},
             {"feature", unittest_feature},
             {NULL}};
         int i;
