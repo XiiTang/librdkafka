@@ -433,6 +433,7 @@ extern int unittest_sasl_oauthbearer_oidc_assertion(void);
 #endif
 extern int unittest_telemetry(void);
 extern int unittest_telemetry_decode(void);
+extern int unittest_assignment(void);
 
 int rd_unittest(void) {
         int fails = 0;
@@ -480,6 +481,7 @@ int rd_unittest(void) {
 #endif
             {"telemetry", unittest_telemetry},
             {"telemetry_decode", unittest_telemetry_decode},
+            {"assignment", unittest_assignment},
             {"feature", unittest_feature},
             {NULL}};
         int i;
