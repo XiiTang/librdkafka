@@ -187,6 +187,62 @@ static void destroy_flags(int local_mode) {
 
 
 
+/**
+ * @brief A consumer destroyed with NO_CONSUMER_CLOSE ends a commit still
+ *        waiting for its group coordinator at once, instead of waiting
+ *        session.timeout.ms for a coordinator nothing waits for.
+ */
+static void do_test_no_consumer_close_ends_deferred_commit(void) {
+        rd_kafka_mock_cluster_t *mcluster;
+        const char *bootstraps;
+        rd_kafka_conf_t *conf;
+        rd_kafka_t *c;
+        rd_kafka_topic_partition_list_t *offsets;
+        test_timing_t timing;
+
+        SUB_TEST_QUICK();
+
+        mcluster = test_mock_cluster_new(2, &bootstraps);
+        rd_kafka_mock_topic_create(mcluster, "topic", 1, 1);
+        rd_kafka_mock_partition_set_leader(mcluster, "topic", 0, 1);
+        rd_kafka_mock_coordinator_set(mcluster, "group", "group", 2);
+        /* The group's coordinator cannot be reached. */
+        rd_kafka_mock_broker_set_down(mcluster, 2);
+
+        test_conf_init(&conf, NULL, 60);
+        test_conf_set(conf, "bootstrap.servers", bootstraps);
+        test_conf_set(conf, "group.id", "group");
+        test_conf_set(conf, "enable.auto.commit", "false");
+        test_conf_set(conf, "session.timeout.ms", "30000");
+        c = test_create_handle(RD_KAFKA_CONSUMER, conf);
+
+        offsets = rd_kafka_topic_partition_list_new(1);
+        rd_kafka_topic_partition_list_add(offsets, "topic", 0)->offset = 1;
+        TEST_CALL_ERR__(rd_kafka_commit(c, offsets, 1 /*async*/));
+        rd_kafka_topic_partition_list_destroy(offsets);
+
+        /* Let the commit be deferred for want of a coordinator. */
+        rd_sleep(2);
+
+        TIMING_START(&timing, "destroy(NO_CONSUMER_CLOSE)");
+        rd_kafka_destroy_flags(c, RD_KAFKA_DESTROY_F_NO_CONSUMER_CLOSE);
+        TIMING_STOP(&timing);
+        /* Well within session.timeout.ms. */
+        TIMING_ASSERT(&timing, 0, 5000);
+
+        test_mock_cluster_destroy(mcluster);
+
+        SUB_TEST_PASS();
+}
+
+int main_0084_destroy_flags_mock(int argc, char **argv) {
+        TEST_SKIP_MOCK_CLUSTER(0);
+
+        do_test_no_consumer_close_ends_deferred_commit();
+
+        return 0;
+}
+
 int main_0084_destroy_flags_local(int argc, char **argv) {
         /* FIXME: fix the test with subscribe/unsubscribe PR. */
         if (!test_consumer_group_protocol_classic()) {

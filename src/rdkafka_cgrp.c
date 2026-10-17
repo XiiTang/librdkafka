@@ -3607,15 +3607,18 @@ static RD_INLINE int rd_kafka_cgrp_try_terminate(rd_kafka_cgrp_t *rkcg) {
         if (likely(!(rkcg->rkcg_flags & RD_KAFKA_CGRP_F_TERMINATE)))
                 return 0;
 
-        /* Check if wait-coord queue has timed out.
+        /* Check if wait-coord queue has timed out, or the instance is
+           destroyed with NO_CONSUMER_CLOSE, which calls for immediate
+           termination: no coordinator is waited for then.
 
            FIXME: Remove usage of `group_session_timeout_ms` for the new
                   consumer group protocol implementation defined in KIP-848.
         */
         if (rd_kafka_q_len(rkcg->rkcg_wait_coord_q) > 0 &&
-            rkcg->rkcg_ts_terminate +
-                    (rkcg->rkcg_rk->rk_conf.group_session_timeout_ms * 1000) <
-                rd_clock()) {
+            (rd_kafka_destroy_flags_no_consumer_close(rkcg->rkcg_rk) ||
+             rkcg->rkcg_ts_terminate +
+                     (rkcg->rkcg_rk->rk_conf.group_session_timeout_ms * 1000) <
+                 rd_clock())) {
                 rd_kafka_dbg(rkcg->rkcg_rk, CGRP, "CGRPTERM",
                              "Group \"%s\": timing out %d op(s) in "
                              "wait-for-coordinator queue",
