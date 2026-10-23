@@ -1871,6 +1871,11 @@ int rd_kafka_OffsetCommitRequest(rd_kafka_broker_t *rkb,
 
         rd_kafka_buf_ApiVersion_set(rkbuf, ApiVersion, 0);
 
+        /* A transmitted OffsetCommit may have been processed, so it is
+         * retried only while it was never transmitted:
+         * rd_kafka_buf_retry() counts only transmitted attempts. */
+        rkbuf->rkbuf_max_retries = RD_KAFKA_REQUEST_NO_RETRIES;
+
         rd_rkb_dbg(rkb, TOPIC, "OFFSET",
                    "Enqueue OffsetCommitRequest(v%d, %d/%d partition(s))): %s",
                    ApiVersion, tot_PartCnt, offsets->cnt, reason);

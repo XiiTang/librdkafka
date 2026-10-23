@@ -22,3 +22,26 @@ for those commits, while rust-rdkafka's caller-owned close destroys with it
 under 1 ms after. Before #5457, Boundless's send_offsets test without a group coordinator
 waited without end; its 0105 subtest passes after. Tests 0084, 0105
 (full), 0106, 0113, 0116 and 0117 pass on macOS arm64.
+
+An OffsetCommit is sent again only while it was never transmitted (Boundless
+W7b): a transmitted commit may have been processed, and resending it can
+overwrite a later commit. Upstream retried a transmitted OffsetCommit up to
+twice (#3398) and deferred one that failed with a transport error,
+NOT_COORDINATOR or COORDINATOR_NOT_AVAILABLE until the coordinator returned,
+then sent it again; Kafka's group coordinator also returns those two errors
+after the commit was appended (REQUEST_TIMED_OUT, NOT_ENOUGH_REPLICAS and
+NOT_LEADER_OR_FOLLOWER are mapped to them). The request now uses upstream's
+RD_KAFKA_REQUEST_NO_RETRIES, under which rd_kafka_buf_retry() retries a buffer
+only while rd_kafka_buf_was_sent() is false, and the consumer group defers
+only a commit whose request was never transmitted. A transmitted commit that
+fails ends with its error. KIP-848's re-commit of automatic commits after
+STALE_MEMBER_EPOCH is unchanged. Test 0117
+offset_commit_resent_only_if_never_transmitted: before, the transmitted commit
+was sent again and returned NO_ERROR (with only the retry limit, the deferral
+still sent it again); after, it ends with ERR__TRANSPORT, the
+never-transmitted commit is retried once and succeeds, the broker receives 2 OffsetCommits and offset 2
+stays committed. 0117's REQUEST_TIMED_OUT test and 0143's offset_commit test
+now assert one OffsetCommit and the commit error (before: 2 requests and
+success). All local tests pass on macOS arm64 with the classic and consumer
+group protocols; 0143's FindCoordinator timing failed twice under the consumer
+protocol on a loaded host and passed three reruns.

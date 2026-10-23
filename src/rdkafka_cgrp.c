@@ -4062,6 +4062,11 @@ static void rd_kafka_cgrp_op_handle_OffsetCommit(rd_kafka_t *rk,
                 /* Future-proofing, see timeout_scan(). */
                 rd_kafka_assert(NULL, err != RD_KAFKA_RESP_ERR__WAIT_COORD);
 
+                /* A transmitted commit may have been processed:
+                 * it is not sent again. */
+                if (request && rd_kafka_buf_was_sent(request))
+                        break;
+
                 if (rd_kafka_cgrp_defer_offset_commit(rkcg, rko_orig,
                                                       rd_kafka_err2str(err)))
                         return;

@@ -165,12 +165,9 @@ static void helper_exponential_backoff(rd_kafka_mock_cluster_t *mcluster,
 }
 /**
  * @brief offset_commit test
- * We fail the request with RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS so
- * that the request is retried with the exponential backoff. The max retries
- * allowed is 2 for offset_commit. The RPC calls rd_kafka_buf_retry for its
- * retry attempt so this tests all such RPCs which depend on it for retrying.
- * The retry number of request is deterministic i.e no fresh requests are
- * spawned on its own. Also the max retries is 2 for Offset Commit.
+ * We fail the request with RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS.
+ * An OffsetCommit is retried only while it was never transmitted, so this
+ * transmitted request is not retried and the commit ends with the error.
  */
 static void test_offset_commit(rd_kafka_mock_cluster_t *mcluster,
                                const char *topic,
@@ -179,6 +176,11 @@ static void test_offset_commit(rd_kafka_mock_cluster_t *mcluster,
         rd_kafka_message_t *rkm;
         rd_kafka_topic_partition_list_t *offsets;
         rd_kafka_topic_partition_t *rktpar;
+        rd_kafka_mock_request_t **requests = NULL;
+        size_t request_cnt                 = 0;
+        size_t commit_cnt                  = 0;
+        rd_kafka_resp_err_t err;
+        size_t i;
         SUB_TEST();
         test_conf_set(conf, "auto.offset.reset", "earliest");
         test_conf_set(conf, "enable.auto.commit", "false");
@@ -190,8 +192,7 @@ static void test_offset_commit(rd_kafka_mock_cluster_t *mcluster,
                 rd_kafka_message_destroy(rkm);
         rd_sleep(4);
         rd_kafka_mock_push_request_errors(
-            mcluster, RD_KAFKAP_OffsetCommit, 2,
-            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+            mcluster, RD_KAFKAP_OffsetCommit, 1,
             RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS);
 
         offsets = rd_kafka_topic_partition_list_new(1);
@@ -199,11 +200,22 @@ static void test_offset_commit(rd_kafka_mock_cluster_t *mcluster,
         /* Setting Offset to an arbitrary number */
         rktpar->offset = 4;
         /* rd_kafka_commit will trigger OffsetCommit RPC call */
-        rd_kafka_commit(consumer, offsets, 0);
+        err = rd_kafka_commit(consumer, offsets, 0);
         rd_kafka_topic_partition_list_destroy(offsets);
-        rd_sleep(3);
+        TEST_ASSERT(err == RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+                    "Expected commit to fail with "
+                    "ERR_COORDINATOR_LOAD_IN_PROGRESS, not %s",
+                    rd_kafka_err2name(err));
 
-        helper_exponential_backoff(mcluster, RD_KAFKAP_OffsetCommit);
+        requests = rd_kafka_mock_get_requests(mcluster, &request_cnt);
+        for (i = 0; i < request_cnt; i++)
+                if (rd_kafka_mock_request_api_key(requests[i]) ==
+                    RD_KAFKAP_OffsetCommit)
+                        commit_cnt++;
+        rd_kafka_mock_request_destroy_array(requests, request_cnt);
+        TEST_ASSERT(commit_cnt == 1,
+                    "Expected 1 OffsetCommit request, not %" PRIusz,
+                    commit_cnt);
 
 
         rd_kafka_destroy(consumer);
