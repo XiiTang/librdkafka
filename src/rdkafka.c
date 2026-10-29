@@ -5864,7 +5864,7 @@ int unittest_failure_rows_groups(void) {
                 rd_slice_init_full(&frame->rkbuf_reader, &frame->rkbuf_buf);
                 rd_kafka_DescribeGroups_resp_cb(rk, a, 0, frame, frame, &state);
                 rd_kafka_buf_destroy(frame);
-                RD_UT_ASSERT(state.err == RD_KAFKA_RESP_ERR__BAD_MSG, "native decode error survives");
+                RD_UT_ASSERT(state.err == (tail ? RD_KAFKA_RESP_ERR__UNDERFLOW : RD_KAFKA_RESP_ERR__BAD_MSG), "native decode error survives");
                 RD_UT_ASSERT(state.broker_error_cnt == 1 && state.grplist->group_cnt == 1,
                              "only whole groups are published with the broker error");
                 RD_UT_ASSERT(!strcmp(state.grplist->groups[0].group, "complete") &&
