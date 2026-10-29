@@ -5775,7 +5775,8 @@ rd_kafka_error_t *rd_kafka_fatal_error_copy(rd_kafka_t *rk) {
  * observable; no socket timing is used to select the order. */
 static rd_kafka_buf_t *ut_group_frame(rd_kafka_broker_t *rkb, int16_t api) {
         rd_kafka_buf_t *frame = rd_kafka_buf_new(1, 128);
-        frame->rkbuf_rkb = rd_kafka_broker_keep(rkb);
+        rd_kafka_broker_keep(rkb);
+        frame->rkbuf_rkb = rkb;
         frame->rkbuf_reqhdr.ApiKey = api;
         return frame;
 }
