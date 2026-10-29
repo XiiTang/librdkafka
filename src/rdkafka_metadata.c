@@ -84,11 +84,11 @@ void rd_kafka_metadata_partition_clear(
 
 
 rd_kafka_resp_err_t
-rd_kafka_metadata(rd_kafka_t *rk,
+rd_kafka_metadata0(rd_kafka_t *rk,
                   int all_topics,
                   rd_kafka_topic_t *only_rkt,
                   const struct rd_kafka_metadata **metadatap,
-                  int timeout_ms) {
+                  int timeout_ms, rd_kafka_error_t **errorp) {
         rd_kafka_q_t *rkq;
         rd_kafka_broker_t *rkb;
         rd_kafka_op_t *rko;
@@ -163,6 +163,11 @@ rd_kafka_metadata(rd_kafka_t *rk,
                 /* Error */
                 err = rko->rko_err;
                 if (err) {
+                        if (errorp && err != RD_KAFKA_RESP_ERR__DESTROY_BROKER) {
+                                *errorp = rd_kafka_error_new(err, NULL);
+                                (*errorp)->reply = rd_kafka_broker_reply_copy(
+                                    rko->rko_broker_reply);
+                        }
                         rd_kafka_op_destroy(rko);
                         if (err != RD_KAFKA_RESP_ERR__DESTROY_BROKER)
                                 return err;
@@ -185,6 +190,9 @@ rd_kafka_metadata(rd_kafka_t *rk,
 
 
 void rd_kafka_metadata_destroy(const struct rd_kafka_metadata *metadata) {
+        rd_kafka_metadata_internal_t *mdi = rd_kafka_metadata_get_internal(metadata);
+        if (mdi->replies)
+                rd_list_destroy(mdi->replies);
         rd_free((void *)metadata);
 }
 
@@ -209,6 +217,8 @@ static rd_kafka_metadata_internal_t *rd_kafka_metadata_copy_internal(
         rd_tmpabuf_finalize(&tbuf);
         mdi = rd_tmpabuf_write(&tbuf, src, sizeof(*mdi));
         md  = &mdi->metadata;
+        mdi->replies = src_internal->replies ?
+            rd_list_copy(src_internal->replies, rd_kafka_broker_reply_copy_opaque, NULL) : NULL;
 
         rd_tmpabuf_write_str(&tbuf, src->orig_broker_name);
 
@@ -244,6 +254,8 @@ static rd_kafka_metadata_internal_t *rd_kafka_metadata_copy_internal(
 
                 md->topics[i].topic =
                     rd_tmpabuf_write_str(&tbuf, src->topics[i].topic);
+                mdi->topics[i].reply = rd_kafka_metadata_broker_reply(
+                    md, md->topics[i].topic, RD_KAFKA_PARTITION_UA);
 
 
                 /* Copy partitions */
@@ -626,6 +638,7 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
                 goto err;
         }
 
+        memset(mdi, 0, sizeof(*mdi));
         md                 = &mdi->metadata;
         md->orig_broker_id = rkb->rkb_nodeid;
         md->orig_broker_name =
@@ -890,8 +903,36 @@ rd_kafka_parse_Metadata0(rd_kafka_broker_t *rkb,
                            "Metadata response: received top level "
                            "error code %" PRId16 ": %s",
                            ErrorCode, rd_kafka_err2str(ErrorCode));
+                rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
+                    rkb, rkbuf, ErrorCode, RD_KAFKA_REPLY_REQUEST,
+                    NULL, 0, RD_KAFKA_PARTITION_UA, 0, NULL, 0);
                 err = ErrorCode;
                 goto err;
+        }
+
+        for (i = 0; i < md->topic_cnt; i++) {
+                const rd_kafka_metadata_topic_t *topic = &md->topics[i];
+                mdi->topics[i].reply = NULL;
+                if (topic->err || topic->partition_cnt > 0) {
+                        if (!mdi->replies)
+                                mdi->replies = rd_list_new(0, rd_free);
+                        if (topic->err) {
+                                mdi->topics[i].reply = rd_kafka_broker_reply_new(
+                                    rkb, rkbuf, topic->err, RD_KAFKA_REPLY_TOPIC,
+                                    topic->topic, strlen(topic->topic),
+                                    RD_KAFKA_PARTITION_UA, 0, NULL, 0);
+                                rd_list_add(mdi->replies, (void *)mdi->topics[i].reply);
+                        }
+                        for (j = 0; j < topic->partition_cnt; j++) {
+                                if (topic->partitions[j].err)
+                                        rd_list_add(mdi->replies,
+                                            rd_kafka_broker_reply_new(
+                                                rkb, rkbuf, topic->partitions[j].err,
+                                                RD_KAFKA_REPLY_PARTITION,
+                                                topic->topic, strlen(topic->topic),
+                                                topic->partitions[j].id, 0, NULL, 0));
+                        }
+                }
         }
 
         /* Entire Metadata response now parsed without errors:
@@ -1173,6 +1214,8 @@ err:
                 rd_list_destroy(missing_topics);
         if (missing_topic_ids)
                 rd_list_destroy(missing_topic_ids);
+        if (mdi && mdi->replies)
+                rd_list_destroy(mdi->replies);
         rd_tmpabuf_destroy(&tbuf);
 
         return err;
@@ -1292,9 +1335,11 @@ rd_kafka_metadata_topic_match(rd_kafka_t *rk,
                             RD_KAFKA_PARTITION_UA);
 
                         if (mdt->err) {
-                                rd_kafka_topic_partition_list_add(
-                                    errored, topic, RD_KAFKA_PARTITION_UA)
-                                    ->err = mdt->err;
+                                rd_kafka_topic_partition_t *part = rd_kafka_topic_partition_list_add(
+                                    errored, topic, RD_KAFKA_PARTITION_UA);
+                                part->err = mdt->err;
+                                rd_kafka_topic_partition_get_private(part)->reply =
+                                    rd_kafka_broker_reply_copy(mdti->reply);
                                 continue; /* Skip errored topics */
                         }
 
@@ -1363,10 +1408,13 @@ rd_kafka_metadata_topic_filter(rd_kafka_t *rk,
                         rd_kafka_topic_partition_list_add(errored, topic,
                                                           RD_KAFKA_PARTITION_UA)
                             ->err = RD_KAFKA_RESP_ERR__UNKNOWN_TOPIC;
-                else if (mtopic->err)
-                        rd_kafka_topic_partition_list_add(errored, topic,
-                                                          RD_KAFKA_PARTITION_UA)
-                            ->err = mtopic->err;
+                else if (mtopic->err) {
+                        rd_kafka_topic_partition_t *part = rd_kafka_topic_partition_list_add(
+                            errored, topic, RD_KAFKA_PARTITION_UA);
+                        part->err = mtopic->err;
+                        rd_kafka_topic_partition_get_private(part)->reply =
+                            rd_kafka_broker_reply_copy(rkmce->rkmce_metadata_internal_topic.reply);
+                }
                 else {
                         rd_list_add(tinfos,
                                     rd_kafka_topic_info_new_with_rack(
@@ -1908,6 +1956,7 @@ rd_kafka_metadata_new_topic_mock(const rd_kafka_metadata_topic_t *topics,
 
         for (i = 0; i < (size_t)md->topic_cnt; i++) {
                 int j;
+                mdi->topics[i].reply = NULL;
 
                 md->topics[i].topic =
                     rd_tmpabuf_write_str(&tbuf, topics[i].topic);
@@ -2218,4 +2267,36 @@ rd_kafka_metadata_update_op(rd_kafka_t *rk, rd_kafka_metadata_internal_t *mdi) {
         rd_kafka_metadata_cache_expiry_start(rk);
 
         return RD_KAFKA_OP_RES_HANDLED;
+}
+
+rd_kafka_resp_err_t rd_kafka_metadata_with_error(
+    rd_kafka_t *rk, int all_topics, rd_kafka_topic_t *only_rkt,
+    const rd_kafka_metadata_t **metadatap, int timeout_ms,
+    rd_kafka_error_t **errorp) {
+        rd_kafka_resp_err_t err;
+        *errorp = NULL;
+        err = rd_kafka_metadata0(rk, all_topics, only_rkt, metadatap, timeout_ms, errorp);
+        if (err && !*errorp)
+                *errorp = rd_kafka_error_new(err, NULL);
+        return err;
+}
+rd_kafka_resp_err_t rd_kafka_metadata(
+    rd_kafka_t *rk, int all_topics, rd_kafka_topic_t *only_rkt,
+    const rd_kafka_metadata_t **metadatap, int timeout_ms) {
+        return rd_kafka_metadata0(rk, all_topics, only_rkt, metadatap, timeout_ms, NULL);
+}
+const rd_kafka_broker_reply_t *rd_kafka_metadata_broker_reply(
+    const rd_kafka_metadata_t *metadata, const char *topic, int32_t partition) {
+        const rd_kafka_metadata_internal_t *mdi = rd_kafka_metadata_get_internal(metadata);
+        const rd_kafka_broker_reply_t *reply;
+        int i;
+        if (!mdi->replies || !topic)
+                return NULL;
+        RD_LIST_FOREACH(reply, mdi->replies, i) {
+                if (!strcmp(topic, reply->name) &&
+                    ((partition == RD_KAFKA_PARTITION_UA && reply->target == RD_KAFKA_REPLY_TOPIC) ||
+                     (reply->target == RD_KAFKA_REPLY_PARTITION && partition == reply->partition)))
+                        return reply;
+        }
+        return NULL;
 }

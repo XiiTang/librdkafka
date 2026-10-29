@@ -301,6 +301,7 @@ static struct rd_kafka_metadata_cache_entry *rd_kafka_metadata_cache_entry_new(
                 }
         }
 
+        rd_tmpabuf_add_alloc(&tbuf, rd_kafka_broker_reply_size(metadata_internal_topic->reply));
         rd_tmpabuf_finalize(&tbuf);
 
         rkmce = rd_tmpabuf_alloc(&tbuf, sizeof(*rkmce));
@@ -308,6 +309,7 @@ static struct rd_kafka_metadata_cache_entry *rd_kafka_metadata_cache_entry_new(
         rkmce->rkmce_mtopic = *mtopic;
 
         rkmce->rkmce_metadata_internal_topic = *metadata_internal_topic;
+        rkmce->rkmce_metadata_internal_topic.reply = rd_kafka_broker_reply_write(&tbuf, metadata_internal_topic->reply);
 
         /* Copy topic name and update pointer */
         rkmce->rkmce_mtopic.topic = rd_tmpabuf_write_str(&tbuf, mtopic->topic);
@@ -543,6 +545,7 @@ rd_kafka_metadata_cache_topic_update_merge_partitions(
                 }
         }
 
+        rd_tmpabuf_add_alloc(&tbuf, rd_kafka_broker_reply_size(mdti->reply));
         rd_tmpabuf_finalize(&tbuf);
 
         rkmce = rd_tmpabuf_alloc(&tbuf, sizeof(*rkmce));
@@ -550,6 +553,7 @@ rd_kafka_metadata_cache_topic_update_merge_partitions(
         rkmce->rkmce_mtopic = *mdt;
 
         rkmce->rkmce_metadata_internal_topic = *mdti;
+        rkmce->rkmce_metadata_internal_topic.reply = rd_kafka_broker_reply_write(&tbuf, mdti->reply);
 
         /* Copy topic name */
         rkmce->rkmce_mtopic.topic = rd_tmpabuf_write_str(&tbuf, mdt->topic);

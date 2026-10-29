@@ -186,7 +186,8 @@ static void rd_kafka_fetch_reply_handle_partition_error(
     rd_kafka_toppar_t *rktp,
     const struct rd_kafka_toppar_ver *tver,
     rd_kafka_resp_err_t err,
-    int64_t HighwaterMarkOffset) {
+    int64_t HighwaterMarkOffset,
+    const rd_kafka_buf_t *request) {
 
         rd_rkb_dbg(rkb, FETCH, "FETCHERR",
                    "%.*s [%" PRId32 "]: Fetch failed at %s: %s",
@@ -297,12 +298,18 @@ static void rd_kafka_fetch_reply_handle_partition_error(
                  * topic mark it as errored to deny
                  * further Fetch requests. */
                 if (rktp->rktp_last_error != err) {
-                        rd_kafka_consumer_err(
+                        rd_kafka_broker_reply_t *reply = rd_kafka_broker_reply_new(
+                    rkb, request, err, RD_KAFKA_REPLY_PARTITION,
+                    rktp->rktp_rkt->rkt_topic->str,
+                    RD_KAFKAP_STR_LEN(rktp->rktp_rkt->rkt_topic),
+                    rktp->rktp_partition, 0, NULL, 0);
+                        rd_kafka_consumer_err_with_reply(
                             rktp->rktp_fetchq, rd_kafka_broker_id(rkb), err,
                             tver->version, NULL, rktp,
-                            rktp->rktp_offsets.fetch_pos.offset,
+                            rktp->rktp_offsets.fetch_pos.offset, reply,
                             "Fetch from broker %" PRId32 " failed: %s",
                             rd_kafka_broker_id(rkb), rd_kafka_err2str(err));
+                        rd_free(reply);
                         rktp->rktp_last_error = err;
                 }
                 break;
@@ -327,14 +334,22 @@ static void rd_kafka_fetch_reply_handle_partition_error(
         case RD_KAFKA_RESP_ERR_MSG_SIZE_TOO_LARGE:
         default: /* and all other errors */
                 rd_dassert(tver->version > 0);
-                rd_kafka_consumer_err(
+                {
+                rd_kafka_broker_reply_t *reply = rd_kafka_broker_reply_new(
+                    rkb, request, err, RD_KAFKA_REPLY_PARTITION,
+                    rktp->rktp_rkt->rkt_topic->str,
+                    RD_KAFKAP_STR_LEN(rktp->rktp_rkt->rkt_topic),
+                    rktp->rktp_partition, 0, NULL, 0);
+                rd_kafka_consumer_err_with_reply(
                     rktp->rktp_fetchq, rd_kafka_broker_id(rkb), err,
                     tver->version, NULL, rktp,
-                    rktp->rktp_offsets.fetch_pos.offset,
+                    rktp->rktp_offsets.fetch_pos.offset, reply,
                     "Fetch from broker %" PRId32 " failed at %s: %s",
                     rd_kafka_broker_id(rkb),
                     rd_kafka_fetch_pos2str(rktp->rktp_offsets.fetch_pos),
                     rd_kafka_err2str(err));
+                rd_free(reply);
+                }
                 break;
         }
 
@@ -710,7 +725,8 @@ static rd_kafka_resp_err_t rd_kafka_fetch_reply_handle_partition(
         if (unlikely(hdr.ErrorCode != RD_KAFKA_RESP_ERR_NO_ERROR)) {
                 /* Handle partition-level errors. */
                 rd_kafka_fetch_reply_handle_partition_error(
-                    rkb, rktp, tver, hdr.ErrorCode, hdr.HighwaterMarkOffset);
+                    rkb, rktp, tver, hdr.ErrorCode, hdr.HighwaterMarkOffset,
+                    request);
 
                 rd_kafka_buf_skip(rkbuf, hdr.MessageSetSize);
                 goto done;

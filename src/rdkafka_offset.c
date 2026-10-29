@@ -371,9 +371,11 @@ rd_kafka_commit0(rd_kafka_t *rk,
         if (rktp)
                 rko->rko_rktp = rd_kafka_toppar_keep(rktp);
 
-        if (offsets)
+        if (offsets) {
                 rko->rko_u.offset_commit.partitions =
                     rd_kafka_topic_partition_list_copy(offsets);
+                rd_kafka_topic_partition_list_clear_replies(rko->rko_u.offset_commit.partitions);
+        }
 
         rd_kafka_q_enq(rkcg->rkcg_ops, rko);
 
@@ -673,6 +675,8 @@ rd_kafka_offsets_store(rd_kafka_t *rk,
         int i;
         int ok_cnt                   = 0;
         rd_kafka_resp_err_t last_err = RD_KAFKA_RESP_ERR_NO_ERROR;
+
+        rd_kafka_topic_partition_list_clear_replies(offsets);
 
         if (rk->rk_conf.enable_auto_offset_store)
                 return RD_KAFKA_RESP_ERR__INVALID_ARG;

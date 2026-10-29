@@ -121,6 +121,8 @@ rd_kafka_fetch_pos_make(int64_t offset,
 #else
 #define RD_KAFKA_FETCH_POS0(offset, leader_epoch, validated)                   \
         rd_kafka_fetch_pos_make(offset, leader_epoch, validated)
+void rd_kafka_topic_partition_list_clear_replies(rd_kafka_topic_partition_list_t *);
+
 #endif
 
 #define RD_KAFKA_FETCH_POS(offset, leader_epoch)                               \
@@ -505,6 +507,7 @@ typedef struct rd_kafka_topic_partition_private_s {
         int32_t leader_epoch;
         /** Topic id. */
         rd_kafka_Uuid_t topic_id;
+        rd_kafka_broker_reply_t *reply;
 } rd_kafka_topic_partition_private_t;
 
 
@@ -963,6 +966,9 @@ const char *rd_kafka_topic_partition_list_str(
     size_t dest_size,
     int fmt_flags);
 
+void rd_kafka_topic_partition_set_broker_reply(
+    rd_kafka_topic_partition_t *partition, rd_kafka_broker_t *broker,
+    const rd_kafka_buf_t *request, int16_t code);
 void rd_kafka_topic_partition_list_update(
     rd_kafka_topic_partition_list_t *dst,
     const rd_kafka_topic_partition_list_t *src);

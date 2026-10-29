@@ -168,4 +168,11 @@ rd_bool_t rd_kafka_txn_coord_set(rd_kafka_t *rk,
 void rd_kafka_txns_term(rd_kafka_t *rk);
 void rd_kafka_txns_init(rd_kafka_t *rk);
 
+
+void rd_kafka_txn_set_fatal_error_reply(rd_kafka_t *, rd_dolock_t,
+    rd_kafka_resp_err_t, const rd_kafka_broker_reply_t *, const char *, ...)
+    RD_FORMAT(printf, 5, 6);
+void rd_kafka_txn_set_abortable_error_reply(rd_kafka_t *, rd_kafka_resp_err_t,
+    rd_bool_t, const rd_kafka_broker_reply_t *, const char *, ...)
+    RD_FORMAT(printf, 5, 6);
 #endif /* _RDKAFKA_TXNMGR_H_ */

@@ -718,17 +718,21 @@ static void rd_kafka_cgrp_handle_FindCoordinator(rd_kafka_t *rk,
         struct rd_kafka_metadata_broker mdb = RD_ZERO_INIT;
         char *errstr                        = NULL;
         int actions;
+        int16_t wire_code = 0;
+        rd_kafkap_str_t wire_explanation = RD_KAFKAP_STR_INITIALIZER;
 
         if (likely(!(ErrorCode = err))) {
                 if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1)
                         rd_kafka_buf_read_throttle_time(rkbuf);
 
                 rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
+                wire_code = ErrorCode;
 
                 if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1) {
                         rd_kafkap_str_t ErrorMsg;
 
                         rd_kafka_buf_read_str(rkbuf, &ErrorMsg);
+                        wire_explanation = ErrorMsg;
 
                         if (!RD_KAFKAP_STR_IS_NULL(&ErrorMsg))
                                 RD_KAFKAP_STR_DUPA(&errstr, &ErrorMsg);
@@ -757,11 +761,17 @@ static void rd_kafka_cgrp_handle_FindCoordinator(rd_kafka_t *rk,
         rd_kafka_cgrp_serve(rkcg); /* Serve updated state, if possible */
         return;
 
-err_parse: /* Parse error */
+err_parse:
+        wire_code = 0; /* Parse error */
         ErrorCode = rkbuf->rkbuf_err;
         /* FALLTHRU */
 
 err:
+        if (wire_code)
+                rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
+                    rkb, request, wire_code, RD_KAFKA_REPLY_GROUP,
+                    rkcg->rkcg_group_id->str, RD_KAFKAP_STR_LEN(rkcg->rkcg_group_id),
+                    RD_KAFKA_PARTITION_UA, 0, wire_explanation.str, RD_KAFKAP_STR_LEN(&wire_explanation) > 0 ? RD_KAFKAP_STR_LEN(&wire_explanation) : 0);
         if (!errstr)
                 errstr = (char *)rd_kafka_err2str(ErrorCode);
 
@@ -797,9 +807,10 @@ err:
                 if (!(actions & RD_KAFKA_ERR_ACTION_RETRY) &&
                     rkcg->rkcg_last_err != ErrorCode) {
                         /* Propagate non-retriable errors to the application */
-                        rd_kafka_consumer_err(
+                        rd_kafka_consumer_err_with_reply(
                             rkcg->rkcg_q, rd_kafka_broker_id(rkb), ErrorCode, 0,
                             NULL, NULL, RD_KAFKA_OFFSET_INVALID,
+                            rkbuf ? rkbuf->rkbuf_broker_reply : NULL,
                             "FindCoordinator response error: %s", errstr);
 
                         /* Suppress repeated errors */
@@ -1798,7 +1809,8 @@ static void rd_kafka_cgrp_handle_SyncGroup_memberstate(
     rd_kafka_cgrp_t *rkcg,
     rd_kafka_broker_t *rkb,
     rd_kafka_resp_err_t err,
-    const rd_kafkap_bytes_t *member_state) {
+    const rd_kafkap_bytes_t *member_state,
+    const rd_kafka_broker_reply_t *reply) {
         rd_kafka_buf_t *rkbuf                       = NULL;
         rd_kafka_topic_partition_list_t *assignment = NULL;
         const int log_decode_errors                 = LOG_ERR;
@@ -1885,7 +1897,7 @@ err:
                      rkcg->rkcg_group_id->str, rd_kafka_err2str(err));
 
         if (err == RD_KAFKA_RESP_ERR_FENCED_INSTANCE_ID)
-                rd_kafka_set_fatal_error(rkcg->rkcg_rk, err,
+                rd_kafka_set_fatal_error_reply(rkcg->rkcg_rk, RD_DO_LOCK, err, reply,
                                          "Fatal consumer error: %s",
                                          rd_kafka_err2str(err));
         else if (err == RD_KAFKA_RESP_ERR_ILLEGAL_GENERATION)
@@ -1918,6 +1930,7 @@ static void rd_kafka_cgrp_handle_SyncGroup(rd_kafka_t *rk,
                                            void *opaque) {
         rd_kafka_cgrp_t *rkcg         = opaque;
         const int log_decode_errors   = LOG_ERR;
+        int16_t wire_code = 0;
         int16_t ErrorCode             = 0;
         rd_kafkap_bytes_t MemberState = RD_ZERO_INIT;
         int actions;
@@ -1941,9 +1954,15 @@ static void rd_kafka_cgrp_handle_SyncGroup(rd_kafka_t *rk,
                 rd_kafka_buf_read_throttle_time(rkbuf);
 
         rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
+        wire_code = ErrorCode;
         rd_kafka_buf_read_kbytes(rkbuf, &MemberState);
 
 err:
+        if (wire_code)
+                rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
+                    rkb, request, wire_code, RD_KAFKA_REPLY_GROUP,
+                    rkcg->rkcg_group_id->str, RD_KAFKAP_STR_LEN(rkcg->rkcg_group_id),
+                    RD_KAFKA_PARTITION_UA, 0, NULL, 0);
         actions = rd_kafka_err_action(rkb, ErrorCode, request,
                                       RD_KAFKA_ERR_ACTION_END);
 
@@ -1971,11 +1990,12 @@ err:
                 return; /* Termination */
 
         rd_kafka_cgrp_handle_SyncGroup_memberstate(rkcg, rkb, ErrorCode,
-                                                   &MemberState);
+                                                   &MemberState, rkbuf ? rkbuf->rkbuf_broker_reply : NULL);
 
         return;
 
 err_parse:
+        wire_code = 0;
         ErrorCode = rkbuf->rkbuf_err;
         goto err;
 }
@@ -2185,6 +2205,7 @@ static void rd_kafka_cgrp_handle_JoinGroup(rd_kafka_t *rk,
                                            void *opaque) {
         rd_kafka_cgrp_t *rkcg       = opaque;
         const int log_decode_errors = LOG_ERR;
+        int16_t wire_code = 0;
         int16_t ErrorCode           = 0;
         int32_t GenerationId;
         rd_kafkap_str_t Protocol, LeaderId;
@@ -2218,6 +2239,7 @@ static void rd_kafka_cgrp_handle_JoinGroup(rd_kafka_t *rk,
                 rd_kafka_buf_read_throttle_time(rkbuf);
 
         rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
+        wire_code = ErrorCode;
         rd_kafka_buf_read_i32(rkbuf, &GenerationId);
         rd_kafka_buf_read_str(rkbuf, &Protocol);
         rd_kafka_buf_read_str(rkbuf, &LeaderId);
@@ -2401,6 +2423,11 @@ static void rd_kafka_cgrp_handle_JoinGroup(rd_kafka_t *rk,
         }
 
 err:
+        if (wire_code)
+                rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
+                    rkb, request, wire_code, RD_KAFKA_REPLY_GROUP,
+                    rkcg->rkcg_group_id->str, RD_KAFKAP_STR_LEN(rkcg->rkcg_group_id),
+                    RD_KAFKA_PARTITION_UA, 0, NULL, 0);
         actions = rd_kafka_err_action(
             rkb, ErrorCode, request, RD_KAFKA_ERR_ACTION_IGNORE,
             RD_KAFKA_RESP_ERR_UNKNOWN_MEMBER_ID,
@@ -2427,15 +2454,16 @@ err:
                         return; /* Termination */
 
                 if (ErrorCode == RD_KAFKA_RESP_ERR_FENCED_INSTANCE_ID) {
-                        rd_kafka_set_fatal_error(rkcg->rkcg_rk, ErrorCode,
+                        rd_kafka_set_fatal_error_reply(rkcg->rkcg_rk, RD_DO_LOCK, ErrorCode, rkbuf ? rkbuf->rkbuf_broker_reply : NULL,
                                                  "Fatal consumer error: %s",
                                                  rd_kafka_err2str(ErrorCode));
                         ErrorCode = RD_KAFKA_RESP_ERR__FATAL;
 
                 } else if (actions & RD_KAFKA_ERR_ACTION_PERMANENT)
-                        rd_kafka_consumer_err(
+                        rd_kafka_consumer_err_with_reply(
                             rkcg->rkcg_q, rd_kafka_broker_id(rkb), ErrorCode, 0,
                             NULL, NULL, RD_KAFKA_OFFSET_INVALID,
+                            rkbuf ? rkbuf->rkbuf_broker_reply : NULL,
                             "JoinGroup failed: %s",
                             rd_kafka_err2str(ErrorCode));
 
@@ -2469,6 +2497,7 @@ err:
         return;
 
 err_parse:
+        wire_code = 0;
         ErrorCode = rkbuf->rkbuf_err;
         goto err;
 }
@@ -3069,6 +3098,7 @@ void rd_kafka_cgrp_handle_ConsumerGroupHeartbeat(rd_kafka_t *rk,
         const int log_decode_errors = LOG_ERR;
         int16_t error_code          = 0;
         int actions                 = 0;
+        int16_t wire_code = 0;
         rd_kafkap_str_t error_str   = RD_KAFKAP_STR_INITIALIZER_EMPTY;
         rd_kafkap_str_t member_id;
         int32_t member_epoch;
@@ -3085,6 +3115,7 @@ void rd_kafka_cgrp_handle_ConsumerGroupHeartbeat(rd_kafka_t *rk,
         rd_kafka_buf_read_throttle_time(rkbuf);
 
         rd_kafka_buf_read_i16(rkbuf, &error_code);
+        wire_code = error_code;
         rd_kafka_buf_read_str(rkbuf, &error_str);
 
         if (error_code) {
@@ -3238,9 +3269,15 @@ void rd_kafka_cgrp_handle_ConsumerGroupHeartbeat(rd_kafka_t *rk,
 
 
 err_parse:
+        wire_code = 0;
         err = rkbuf->rkbuf_err;
 
 err:
+        if (wire_code)
+                rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
+                    rkb, request, wire_code, RD_KAFKA_REPLY_GROUP,
+                    rkcg->rkcg_group_id->str, RD_KAFKAP_STR_LEN(rkcg->rkcg_group_id),
+                    RD_KAFKA_PARTITION_UA, 0, error_str.str, RD_KAFKAP_STR_LEN(&error_str) > 0 ? RD_KAFKAP_STR_LEN(&error_str) : 0);
         rkcg->rkcg_last_heartbeat_err = err;
         rkcg->rkcg_flags &= ~RD_KAFKA_CGRP_F_HEARTBEAT_IN_TRANSIT;
 
@@ -3323,8 +3360,8 @@ err:
         }
 
         if (actions & RD_KAFKA_ERR_ACTION_FATAL) {
-                rd_kafka_set_fatal_error(
-                    rkcg->rkcg_rk, err,
+                rd_kafka_set_fatal_error_reply(
+                    rkcg->rkcg_rk, RD_DO_LOCK, err, rkbuf ? rkbuf->rkbuf_broker_reply : NULL,
                     "ConsumerGroupHeartbeat fatal error: %s",
                     rd_kafka_err2str(err));
                 rd_kafka_cgrp_revoke_all_rejoin_maybe(
@@ -3358,9 +3395,9 @@ err:
                     (rd_clock() >
                      rkcg->rkcg_ts_last_err + min_error_interval)) {
                         rd_kafka_cgrp_set_last_err(rkcg, err);
-                        rd_kafka_consumer_err(
+                        rd_kafka_consumer_err_with_reply(
                             rkcg->rkcg_q, rd_kafka_broker_id(rkb), err, 0, NULL,
-                            NULL, err,
+                            NULL, err, rkbuf ? rkbuf->rkbuf_broker_reply : NULL,
                             "ConsumerGroupHeartbeat failed: %s%s%.*s",
                             rd_kafka_err2str(err),
                             RD_KAFKAP_STR_LEN(&error_str) ? ": " : "",
@@ -3389,6 +3426,7 @@ void rd_kafka_cgrp_handle_Heartbeat(rd_kafka_t *rk,
                                     void *opaque) {
         rd_kafka_cgrp_t *rkcg       = rk->rk_cgrp;
         const int log_decode_errors = LOG_ERR;
+        int16_t wire_code = 0;
         int16_t ErrorCode           = 0;
         int actions                 = 0;
 
@@ -3407,6 +3445,7 @@ void rd_kafka_cgrp_handle_Heartbeat(rd_kafka_t *rk,
                 rd_kafka_buf_read_throttle_time(rkbuf);
 
         rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
+        wire_code = ErrorCode;
         if (ErrorCode) {
                 err = ErrorCode;
                 goto err;
@@ -3418,8 +3457,14 @@ void rd_kafka_cgrp_handle_Heartbeat(rd_kafka_t *rk,
         return;
 
 err_parse:
+        wire_code = 0;
         err = rkbuf->rkbuf_err;
 err:
+        if (wire_code)
+                rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
+                    rkb, request, wire_code, RD_KAFKA_REPLY_GROUP,
+                    rkcg->rkcg_group_id->str, RD_KAFKAP_STR_LEN(rkcg->rkcg_group_id),
+                    RD_KAFKA_PARTITION_UA, 0, NULL, 0);
         rkcg->rkcg_last_heartbeat_err = err;
 
         rd_kafka_dbg(
@@ -3485,7 +3530,7 @@ err:
                 return;
 
         case RD_KAFKA_RESP_ERR_FENCED_INSTANCE_ID:
-                rd_kafka_set_fatal_error(rkcg->rkcg_rk, err,
+                rd_kafka_set_fatal_error_reply(rkcg->rkcg_rk, RD_DO_LOCK, err, rkbuf ? rkbuf->rkbuf_broker_reply : NULL,
                                          "Fatal consumer error: %s",
                                          rd_kafka_err2str(err));
                 rd_kafka_cgrp_revoke_all_rejoin_maybe(
@@ -5283,9 +5328,10 @@ static void rd_kafka_propagate_consumer_topic_errors(
                              topic->topic, rd_kafka_err2str(topic->err));
 
                 /* Send consumer error to application */
-                rd_kafka_consumer_err(
+                rd_kafka_consumer_err_with_reply(
                     rkcg->rkcg_q, RD_KAFKA_NODEID_UA, topic->err, 0,
-                    topic->topic, NULL, RD_KAFKA_OFFSET_INVALID, "%s: %s: %s",
+                    topic->topic, NULL, RD_KAFKA_OFFSET_INVALID,
+                    rd_kafka_topic_partition_broker_reply(topic), "%s: %s: %s",
                     error_prefix, topic->topic, rd_kafka_err2str(topic->err));
         }
 

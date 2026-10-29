@@ -32,12 +32,15 @@
 
 #include <stdarg.h>
 
+typedef struct rd_kafka_broker_s rd_kafka_broker_t;
+
 /**
  * @name Public API complex error type implementation.
  *
  */
 
 struct rd_kafka_error_s {
+        rd_kafka_broker_reply_t *reply; /**< Owned correlated wire result. */
         rd_kafka_resp_err_t code; /**< Error code. */
         char *errstr;             /**< Human readable error string, allocated
                                    *   with the rd_kafka_error_s struct
@@ -49,6 +52,20 @@ struct rd_kafka_error_s {
             txn_requires_abort; /**< This is an abortable transaction error.*/
 };
 
+
+/* Decoder-only construction. Strings are copied with their decoded lengths. */
+rd_kafka_broker_reply_t *rd_kafka_broker_reply_new(
+    rd_kafka_broker_t *rkb, const rd_kafka_buf_t *request, int16_t code,
+    rd_kafka_reply_target_t target, const char *name, size_t name_size,
+    int32_t partition, int8_t resource_type,
+    const char *explanation, size_t explanation_size);
+rd_kafka_broker_reply_t *
+rd_kafka_broker_reply_copy(const rd_kafka_broker_reply_t *reply);
+void *rd_kafka_broker_reply_copy_opaque(const void *reply, void *opaque);
+
+rd_kafka_error_t *rd_kafka_error_new_with_reply(
+    rd_kafka_resp_err_t code, const rd_kafka_broker_reply_t *reply,
+    const char *fmt, ...) RD_FORMAT(printf, 3, 4);
 
 rd_kafka_error_t *
 rd_kafka_error_new_v(rd_kafka_resp_err_t code, const char *fmt, va_list ap);
@@ -77,4 +94,8 @@ rd_kafka_error_new_txn_requires_abort(rd_kafka_resp_err_t code,
 rd_kafka_resp_err_t rd_kafka_error_to_legacy(rd_kafka_error_t *error,
                                              char *errstr,
                                              size_t errstr_size);
+size_t rd_kafka_broker_reply_size(const rd_kafka_broker_reply_t *);
+rd_kafka_broker_reply_t *rd_kafka_broker_reply_write(
+    rd_tmpabuf_t *, const rd_kafka_broker_reply_t *);
+
 #endif /* _RDKAFKA_ERROR_H_ */

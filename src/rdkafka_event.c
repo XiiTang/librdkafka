@@ -500,3 +500,12 @@ rd_kafka_event_ElectLeaders_result(rd_kafka_event_t *rkev) {
         else
                 return (const rd_kafka_ElectLeaders_result_t *)rkev;
 }
+
+const rd_kafka_broker_reply_t *
+rd_kafka_event_broker_reply(const rd_kafka_event_t *event) {
+        if (event->rko_broker_reply)
+                return event->rko_broker_reply;
+        if ((event->rko_type & ~RD_KAFKA_OP_FLAGMASK) == RD_KAFKA_OP_CONSUMER_ERR)
+                return event->rko_u.err.rkm.rkm_broker_reply;
+        return rd_kafka_error_broker_reply(event->rko_error);
+}

@@ -76,6 +76,7 @@ void rd_kafka_buf_destroy_final(rd_kafka_buf_t *rkbuf) {
 
         rd_refcnt_destroy(&rkbuf->rkbuf_refcnt);
 
+        rd_free(rkbuf->rkbuf_broker_reply);
         rd_free(rkbuf);
 }
 

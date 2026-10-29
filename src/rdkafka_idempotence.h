@@ -136,9 +136,24 @@ rd_bool_t rd_kafka_idemp_check_error(rd_kafka_t *rk,
                         rd_kafka_set_fatal_error(RK, ERR, __VA_ARGS__);        \
         } while (0)
 
+#define rd_kafka_idemp_set_fatal_error_reply(RK, ERR, REPLY, ...) \
+        do { \
+                if (rd_kafka_is_transactional(RK)) \
+                        rd_kafka_txn_set_fatal_error_reply( \
+                            RK, RD_DO_LOCK, ERR, REPLY, __VA_ARGS__); \
+                else \
+                        rd_kafka_set_fatal_error_reply( \
+                            RK, RD_DO_LOCK, ERR, REPLY, __VA_ARGS__); \
+        } while (0)
+
 void rd_kafka_idemp_start(rd_kafka_t *rk, rd_bool_t immediate);
 void rd_kafka_idemp_init(rd_kafka_t *rk);
 void rd_kafka_idemp_term(rd_kafka_t *rk);
 
 
+
+void rd_kafka_idemp_request_pid_failed_reply(rd_kafka_broker_t *,
+    rd_kafka_resp_err_t, const rd_kafka_broker_reply_t *);
+void rd_kafka_idemp_drain_epoch_bump_reply(rd_kafka_t *, rd_kafka_resp_err_t,
+    const rd_kafka_broker_reply_t *, const char *, ...) RD_FORMAT(printf, 4, 5);
 #endif /* _RD_KAFKA_IDEMPOTENCE_H_ */

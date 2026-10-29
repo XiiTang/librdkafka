@@ -69,6 +69,7 @@ rd_kafka_topic_result_t *rd_kafka_topic_result_new(const char *topic,
 
         terr = rd_malloc(sizeof(*terr) + tlen + 1 + elen);
 
+        terr->reply = NULL;
         terr->err = err;
 
         terr->topic = terr->data;
@@ -90,6 +91,7 @@ rd_kafka_topic_result_t *rd_kafka_topic_result_new(const char *topic,
  * @brief Destroy topic_result
  */
 void rd_kafka_topic_result_destroy(rd_kafka_topic_result_t *terr) {
+        rd_free(terr->reply);
         rd_free(terr);
 }
 
@@ -406,4 +408,9 @@ void *rd_kafka_topic_partition_result_copy_opaque(const void *src,
  */
 void rd_kafka_topic_partition_result_free(void *ptr) {
         rd_kafka_topic_partition_result_destroy(ptr);
+}
+
+const rd_kafka_broker_reply_t *
+rd_kafka_topic_result_broker_reply(const rd_kafka_topic_result_t *result) {
+        return result->reply;
 }

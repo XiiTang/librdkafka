@@ -2111,7 +2111,7 @@ rd_kafka_CreateTopicsResponse_parse(rd_kafka_op_t *rko_req,
 
         for (i = 0; i < (int)topic_cnt; i++) {
                 rd_kafkap_str_t ktopic;
-                int16_t error_code;
+                int16_t error_code, wire_code;
                 rd_kafkap_str_t error_msg = RD_KAFKAP_STR_INITIALIZER;
                 char *this_errstr         = NULL;
                 rd_kafka_topic_result_t *terr;
@@ -2120,6 +2120,7 @@ rd_kafka_CreateTopicsResponse_parse(rd_kafka_op_t *rko_req,
 
                 rd_kafka_buf_read_str(reply, &ktopic);
                 rd_kafka_buf_read_i16(reply, &error_code);
+                wire_code = error_code;
 
                 if (rd_kafka_buf_ApiVersion(reply) >= 1)
                         rd_kafka_buf_read_str(reply, &error_msg);
@@ -2149,6 +2150,13 @@ rd_kafka_CreateTopicsResponse_parse(rd_kafka_op_t *rko_req,
                 terr = rd_kafka_topic_result_new(ktopic.str,
                                                  RD_KAFKAP_STR_LEN(&ktopic),
                                                  error_code, this_errstr);
+
+                if (wire_code)
+                        terr->reply = rd_kafka_broker_reply_new(
+                            rkb, reply, wire_code, RD_KAFKA_REPLY_TOPIC,
+                            ktopic.str, RD_KAFKAP_STR_LEN(&ktopic),
+                            RD_KAFKA_PARTITION_UA, 0, error_msg.str, RD_KAFKAP_STR_LEN(&error_msg) > 0 ?
+                            (size_t)RD_KAFKAP_STR_LEN(&error_msg) : 0);
 
                 /* As a convenience to the application we insert topic result
                  * in the same order as they were requested. The broker
@@ -2335,13 +2343,14 @@ rd_kafka_DeleteTopicsResponse_parse(rd_kafka_op_t *rko_req,
 
         for (i = 0; i < (int)topic_cnt; i++) {
                 rd_kafkap_str_t ktopic;
-                int16_t error_code;
+                int16_t error_code, wire_code;
                 rd_kafka_topic_result_t *terr;
                 rd_kafka_NewTopic_t skel;
                 int orig_pos;
 
                 rd_kafka_buf_read_str(reply, &ktopic);
                 rd_kafka_buf_read_i16(reply, &error_code);
+                wire_code = error_code;
 
                 /* For non-blocking DeleteTopicsRequests the broker
                  * will returned REQUEST_TIMED_OUT for topics
@@ -2358,6 +2367,12 @@ rd_kafka_DeleteTopicsResponse_parse(rd_kafka_op_t *rko_req,
                 terr = rd_kafka_topic_result_new(
                     ktopic.str, RD_KAFKAP_STR_LEN(&ktopic), error_code,
                     error_code ? rd_kafka_err2str(error_code) : NULL);
+
+                if (wire_code)
+                        terr->reply = rd_kafka_broker_reply_new(
+                            rkb, reply, wire_code, RD_KAFKA_REPLY_TOPIC,
+                            ktopic.str, RD_KAFKAP_STR_LEN(&ktopic),
+                            RD_KAFKA_PARTITION_UA, 0, NULL, 0);
 
                 /* As a convenience to the application we insert topic result
                  * in the same order as they were requested. The broker
@@ -2608,7 +2623,7 @@ rd_kafka_CreatePartitionsResponse_parse(rd_kafka_op_t *rko_req,
 
         for (i = 0; i < (int)topic_cnt; i++) {
                 rd_kafkap_str_t ktopic;
-                int16_t error_code;
+                int16_t error_code, wire_code;
                 char *this_errstr = NULL;
                 rd_kafka_topic_result_t *terr;
                 rd_kafka_NewTopic_t skel;
@@ -2617,6 +2632,7 @@ rd_kafka_CreatePartitionsResponse_parse(rd_kafka_op_t *rko_req,
 
                 rd_kafka_buf_read_str(reply, &ktopic);
                 rd_kafka_buf_read_i16(reply, &error_code);
+                wire_code = error_code;
                 rd_kafka_buf_read_str(reply, &error_msg);
 
                 /* For non-blocking CreatePartitionsRequests the broker
@@ -2643,6 +2659,13 @@ rd_kafka_CreatePartitionsResponse_parse(rd_kafka_op_t *rko_req,
                 terr = rd_kafka_topic_result_new(
                     ktopic.str, RD_KAFKAP_STR_LEN(&ktopic), error_code,
                     error_code ? this_errstr : NULL);
+
+                if (wire_code)
+                        terr->reply = rd_kafka_broker_reply_new(
+                            rkb, reply, wire_code, RD_KAFKA_REPLY_TOPIC,
+                            ktopic.str, RD_KAFKAP_STR_LEN(&ktopic),
+                            RD_KAFKA_PARTITION_UA, 0, error_msg.str, RD_KAFKAP_STR_LEN(&error_msg) > 0 ?
+                            (size_t)RD_KAFKAP_STR_LEN(&error_msg) : 0);
 
                 /* As a convenience to the application we insert topic result
                  * in the same order as they were requested. The broker
@@ -2970,6 +2993,7 @@ rd_kafka_ConfigResource_new(rd_kafka_ResourceType_t restype,
 }
 
 void rd_kafka_ConfigResource_destroy(rd_kafka_ConfigResource_t *config) {
+        rd_free(config->reply);
         rd_list_destroy(&config->config);
         if (config->errstr)
                 rd_free(config->errstr);
@@ -3252,6 +3276,14 @@ rd_kafka_AlterConfigsResponse_parse(rd_kafka_op_t *rko_req,
                 }
 
                 config->err = error_code;
+                if (error_code)
+                        config->reply = rd_kafka_broker_reply_new(
+                            rkb, reply, error_code, RD_KAFKA_REPLY_RESOURCE,
+                            kres_name.str, RD_KAFKAP_STR_LEN(&kres_name),
+                            RD_KAFKA_PARTITION_UA, config_resource_type,
+                            error_msg.str, RD_KAFKAP_STR_LEN(&error_msg) > 0 ?
+                                (size_t)RD_KAFKAP_STR_LEN(&error_msg) : 0);
+
                 if (this_errstr)
                         config->errstr = rd_strdup(this_errstr);
 
@@ -3724,6 +3756,14 @@ rd_kafka_DescribeConfigsResponse_parse(rd_kafka_op_t *rko_req,
                 }
 
                 config->err = error_code;
+                if (error_code)
+                        config->reply = rd_kafka_broker_reply_new(
+                            rkb, reply, error_code, RD_KAFKA_REPLY_RESOURCE,
+                            kres_name.str, RD_KAFKAP_STR_LEN(&kres_name),
+                            RD_KAFKA_PARTITION_UA, config_resource_type,
+                            error_msg.str, RD_KAFKAP_STR_LEN(&error_msg) > 0 ?
+                                (size_t)RD_KAFKAP_STR_LEN(&error_msg) : 0);
+
                 if (this_errstr)
                         config->errstr = rd_strdup(this_errstr);
 
@@ -4071,6 +4111,12 @@ rd_kafka_DeleteRecordsResponse_parse(rd_kafka_op_t *rko_req,
                                         "Failed to parse topic partitions");
 
 
+        {
+                int i;
+                for (i = 0; i < offsets->cnt; i++)
+                        rd_kafka_topic_partition_set_broker_reply(&offsets->elems[i],
+                            reply->rkbuf_rkb, reply, offsets->elems[i].err);
+        }
         rko_result = rd_kafka_admin_result_new(rko_req);
         rd_list_init(&rko_result->rko_u.admin_result.results, 1,
                      rd_kafka_topic_partition_list_destroy_free);
@@ -4785,6 +4831,12 @@ rd_kafka_DeleteGroupsResponse_parse(rd_kafka_op_t *rko_req,
                 groupres = rd_kafka_group_result_new(
                     kgroup.str, RD_KAFKAP_STR_LEN(&kgroup), NULL,
                     error_code ? rd_kafka_error_new(error_code, NULL) : NULL);
+
+                if (groupres->error)
+                        groupres->error->reply = rd_kafka_broker_reply_new(
+                            reply->rkbuf_rkb, reply, error_code, RD_KAFKA_REPLY_GROUP,
+                            kgroup.str, RD_KAFKAP_STR_LEN(&kgroup),
+                            RD_KAFKA_PARTITION_UA, 0, NULL, 0);
 
                 rd_list_add(&rko_result->rko_u.admin_result.results, groupres);
         }
@@ -9212,7 +9264,7 @@ rd_kafka_DescribeTopicsResponse_parse(rd_kafka_op_t *rko_req,
                 rd_list_set(&rko_result->rko_u.admin_result.results, orig_pos,
                             topicdesc);
         }
-        rd_free(mdi);
+        rd_kafka_metadata_destroy(&mdi->metadata);
 
         *rko_resultp = rko_result;
         return RD_KAFKA_RESP_ERR_NO_ERROR;
@@ -9473,7 +9525,7 @@ rd_kafka_DescribeClusterResponse_parse(rd_kafka_op_t *rko_req,
 
         clusterdesc = rd_kafka_ClusterDescription_new(mdi);
 
-        rd_free(mdi);
+        rd_kafka_metadata_destroy(&mdi->metadata);
 
         rd_list_add(&rko_result->rko_u.admin_result.results, clusterdesc);
         *rko_resultp = rko_result;
@@ -9792,3 +9844,8 @@ void rd_kafka_ElectLeaders(rd_kafka_t *rk,
 }
 
 /**@}*/
+
+const rd_kafka_broker_reply_t *
+rd_kafka_ConfigResource_broker_reply(const rd_kafka_ConfigResource_t *resource) {
+        return resource->reply;
+}

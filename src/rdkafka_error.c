@@ -34,13 +34,16 @@
 
 #include "rdkafka_int.h"
 #include "rdkafka_error.h"
+#include "rdkafka_broker.h"
 
 #include <stdarg.h>
 
 
 void rd_kafka_error_destroy(rd_kafka_error_t *error) {
-        if (error)
+        if (error) {
+                rd_free(error->reply);
                 rd_free(error);
+        }
 }
 
 
@@ -60,6 +63,7 @@ rd_kafka_error_new_v(rd_kafka_resp_err_t code, const char *fmt, va_list ap) {
         }
 
         error                     = rd_malloc(sizeof(*error) + strsz);
+        error->reply              = NULL;
         error->code               = code;
         error->fatal              = rd_false;
         error->retriable          = rd_false;
@@ -84,6 +88,7 @@ rd_kafka_error_t *rd_kafka_error_copy(const rd_kafka_error_t *src) {
         }
 
         error                     = rd_malloc(sizeof(*error) + strsz);
+        error->reply              = rd_kafka_broker_reply_copy(src->reply);
         error->code               = src->code;
         error->fatal              = src->fatal;
         error->retriable          = src->retriable;
@@ -226,3 +231,84 @@ rd_kafka_resp_err_t rd_kafka_error_to_legacy(rd_kafka_error_t *error,
 }
 
 /**@}*/
+
+/* Projection plus length-bearing text, usable in an owner's contiguous backing. */
+size_t rd_kafka_broker_reply_size(const rd_kafka_broker_reply_t *src) {
+        return src ? sizeof(*src) + strlen(src->peer) + 1 + src->name_size + 1 +
+                         src->explanation_size + 1 : 0;
+}
+static rd_kafka_broker_reply_t *rd_kafka_broker_reply_copy_into(
+    rd_kafka_broker_reply_t *dst, const rd_kafka_broker_reply_t *src) {
+        char *p = (char *)(dst + 1);
+        size_t peer_size = strlen(src->peer) + 1;
+        *dst = *src;
+        dst->peer = p;
+        memcpy(p, src->peer, peer_size);
+        p += peer_size;
+        dst->name = p;
+        if (src->name_size)
+                memcpy(p, src->name, src->name_size);
+        p[src->name_size] = '\0';
+        p += src->name_size + 1;
+        dst->explanation = src->explanation_size ? p : NULL;
+        if (src->explanation_size)
+                memcpy(p, src->explanation, src->explanation_size);
+        p[src->explanation_size] = '\0';
+        return dst;
+}
+rd_kafka_broker_reply_t *rd_kafka_broker_reply_copy(const rd_kafka_broker_reply_t *src) {
+        return src ? rd_kafka_broker_reply_copy_into(
+            rd_malloc(rd_kafka_broker_reply_size(src)), src) : NULL;
+}
+rd_kafka_broker_reply_t *rd_kafka_broker_reply_write(
+    rd_tmpabuf_t *tbuf, const rd_kafka_broker_reply_t *src) {
+        return src ? rd_kafka_broker_reply_copy_into(
+            rd_tmpabuf_alloc(tbuf, rd_kafka_broker_reply_size(src)), src) : NULL;
+}
+
+rd_kafka_broker_reply_t *rd_kafka_broker_reply_new(
+    rd_kafka_broker_t *rkb, const rd_kafka_buf_t *request, int16_t code,
+    rd_kafka_reply_target_t target, const char *name, size_t name_size,
+    int32_t partition, int8_t resource_type,
+    const char *explanation, size_t explanation_size) {
+        rd_kafka_broker_reply_t src = RD_ZERO_INIT;
+        rd_kafka_broker_reply_t *dst;
+        src.api_key = request->rkbuf_reqhdr.ApiKey;
+        src.api_version = request->rkbuf_reqhdr.ApiVersion;
+        src.code = code;
+        src.target = target;
+        src.name = name;
+        src.name_size = name_size;
+        src.partition = partition;
+        src.resource_type = resource_type;
+        src.explanation = explanation;
+        src.explanation_size = explanation && explanation_size ?
+            explanation_size : 0;
+        rd_kafka_broker_lock(rkb);
+        src.broker_id = rkb->rkb_nodeid;
+        src.peer = rkb->rkb_nodename;
+        dst = rd_kafka_broker_reply_copy(&src);
+        rd_kafka_broker_unlock(rkb);
+        return dst;
+}
+
+const rd_kafka_broker_reply_t *
+rd_kafka_error_broker_reply(const rd_kafka_error_t *error) {
+        return error ? error->reply : NULL;
+}
+
+void *rd_kafka_broker_reply_copy_opaque(const void *reply, void *opaque) {
+        return rd_kafka_broker_reply_copy(reply);
+}
+
+rd_kafka_error_t *rd_kafka_error_new_with_reply(
+    rd_kafka_resp_err_t code, const rd_kafka_broker_reply_t *reply,
+    const char *fmt, ...) {
+        va_list ap;
+        rd_kafka_error_t *error;
+        va_start(ap, fmt);
+        error = rd_kafka_error_new_v(code, fmt, ap);
+        va_end(ap);
+        error->reply = rd_kafka_broker_reply_copy(reply);
+        return error;
+}

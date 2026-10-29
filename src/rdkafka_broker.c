@@ -472,6 +472,7 @@ void rd_kafka_broker_set_state(rd_kafka_broker_t *rkb, int state) {
  * @locality broker thread
  */
 static void rd_kafka_broker_set_error(rd_kafka_broker_t *rkb,
+                                      const rd_kafka_broker_reply_t *reply,
                                       int level,
                                       rd_kafka_resp_err_t err,
                                       const char *fmt,
@@ -607,7 +608,7 @@ static void rd_kafka_broker_set_error(rd_kafka_broker_t *rkb,
 
                 if (level <= LOG_ERR)
                         /* Send ERR op to application for processing. */
-                        rd_kafka_q_op_err(rkb->rkb_rk->rk_rep, err, "%s: %s",
+                        rd_kafka_q_op_err_with_reply(rkb->rkb_rk->rk_rep, err, reply, "%s: %s",
                                           rkb->rkb_name, errstr);
         }
 }
@@ -623,12 +624,11 @@ static void rd_kafka_broker_set_error(rd_kafka_broker_t *rkb,
  *
  * @locality broker thread
  */
-void rd_kafka_broker_fail(rd_kafka_broker_t *rkb,
+static void rd_kafka_broker_fail_v(rd_kafka_broker_t *rkb,
                           int level,
                           rd_kafka_resp_err_t err,
-                          const char *fmt,
-                          ...) {
-        va_list ap;
+                          const rd_kafka_broker_reply_t *reply,
+                          const char *fmt, va_list ap) {
         rd_kafka_bufq_t tmpq_waitresp, tmpq;
         int old_state;
         rd_kafka_toppar_t *rktp;
@@ -652,9 +652,7 @@ void rd_kafka_broker_fail(rd_kafka_broker_t *rkb,
 
         rkb->rkb_reauth_in_progress = rd_false;
 
-        va_start(ap, fmt);
-        rd_kafka_broker_set_error(rkb, level, err, fmt, ap);
-        va_end(ap);
+        rd_kafka_broker_set_error(rkb, reply, level, err, fmt, ap);
 
         rd_kafka_broker_lock(rkb);
 
@@ -769,6 +767,23 @@ void rd_kafka_broker_fail(rd_kafka_broker_t *rkb,
             old_state >= RD_KAFKA_BROKER_STATE_UP)
                 rd_kafka_metadata_refresh_known_topics(
                     rkb->rkb_rk, NULL, rd_true /*force*/, "broker down");
+}
+
+void rd_kafka_broker_fail(rd_kafka_broker_t *rkb, int level,
+                          rd_kafka_resp_err_t err, const char *fmt, ...) {
+        va_list ap;
+        va_start(ap, fmt);
+        rd_kafka_broker_fail_v(rkb, level, err, NULL, fmt, ap);
+        va_end(ap);
+}
+void rd_kafka_broker_fail_with_reply(rd_kafka_broker_t *rkb, int level,
+                          rd_kafka_resp_err_t err,
+                          const rd_kafka_broker_reply_t *reply,
+                          const char *fmt, ...) {
+        va_list ap;
+        va_start(ap, fmt);
+        rd_kafka_broker_fail_v(rkb, level, err, reply, fmt, ap);
+        va_end(ap);
 }
 
 
@@ -2390,6 +2405,7 @@ static void rd_kafka_broker_handle_SaslHandshake(rd_kafka_t *rk,
         const int log_decode_errors = LOG_ERR;
         int32_t MechCnt;
         int16_t ErrorCode;
+        rd_kafka_broker_reply_t *reply = NULL;
         int i       = 0;
         char *mechs = "(n/a)";
         size_t msz, mof = 0;
@@ -2427,6 +2443,10 @@ static void rd_kafka_broker_handle_SaslHandshake(rd_kafka_t *rk,
                    "SASLMECHS", "Broker supported SASL mechanisms: %s", mechs);
 
         if (ErrorCode) {
+                reply = rd_kafka_broker_reply_new(
+                    rkb, request, ErrorCode, RD_KAFKA_REPLY_AUTHENTICATION,
+                    rk->rk_conf.sasl.mechanisms, strlen(rk->rk_conf.sasl.mechanisms),
+                    RD_KAFKA_PARTITION_UA, 0, NULL, 0);
                 err = ErrorCode;
                 goto err;
         }
@@ -2438,11 +2458,12 @@ static void rd_kafka_broker_handle_SaslHandshake(rd_kafka_t *rk,
 err_parse:
         err = rkbuf->rkbuf_err;
 err:
-        rd_kafka_broker_fail(rkb, LOG_ERR, RD_KAFKA_RESP_ERR__AUTHENTICATION,
+        rd_kafka_broker_fail_with_reply(rkb, LOG_ERR, RD_KAFKA_RESP_ERR__AUTHENTICATION, reply,
                              "SASL %s mechanism handshake failed: %s: "
                              "broker's supported mechanisms: %s",
                              rkb->rkb_rk->rk_conf.sasl.mechanisms,
                              rd_kafka_err2str(err), mechs);
+        rd_free(reply);
 }
 
 

@@ -50,6 +50,7 @@ typedef struct rd_kafka_metadata_partition_internal_s {
  * @brief Metadata topic internal container
  */
 typedef struct rd_kafka_metadata_topic_internal_s {
+        const rd_kafka_broker_reply_t *reply; /* borrowed from the metadata/cache backing */
         /** Internal metadata partition structs.
          *  same count as metadata.topics[i].partition_cnt.
          *  Sorted by Partition Id. */
@@ -81,6 +82,7 @@ typedef struct rd_kafka_metadata_internal_s {
                            be kept the first field so the pointer
                            can be cast to *rd_kafka_metadata_internal_t
                            when needed */
+        rd_list_t *replies; /**< Owned projections on this completed result. */
         /* Identical to metadata->brokers, but sorted by broker id. */
         struct rd_kafka_metadata_broker *brokers_sorted;
         /* Internal metadata brokers. Same count as metadata.broker_cnt.

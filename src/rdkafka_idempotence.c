@@ -150,10 +150,11 @@ rd_kafka_broker_t *rd_kafka_idemp_broker_any(rd_kafka_t *rk,
  * @locks rd_kafka_wrlock() MUST be held
  * @locality rdkafka main thread
  */
-rd_bool_t rd_kafka_idemp_check_error(rd_kafka_t *rk,
+rd_bool_t rd_kafka_idemp_check_error_reply(rd_kafka_t *rk,
                                      rd_kafka_resp_err_t err,
                                      const char *errstr,
-                                     rd_bool_t is_fatal) {
+                                     rd_bool_t is_fatal,
+                                     const rd_kafka_broker_reply_t *reply) {
         const char *preface = "";
 
         switch (err) {
@@ -180,10 +181,10 @@ rd_bool_t rd_kafka_idemp_check_error(rd_kafka_t *rk,
                 return rd_false;
 
         if (rd_kafka_is_transactional(rk))
-                rd_kafka_txn_set_fatal_error(rk, RD_DONT_LOCK, err, "%s%s",
+                rd_kafka_txn_set_fatal_error_reply(rk, RD_DONT_LOCK, err, reply, "%s%s",
                                              preface, errstr);
         else
-                rd_kafka_set_fatal_error0(rk, RD_DONT_LOCK, err, "%s%s",
+                rd_kafka_set_fatal_error_reply(rk, RD_DONT_LOCK, err, reply, "%s%s",
                                           preface, errstr);
 
         rd_kafka_idemp_set_state(rk, RD_KAFKA_IDEMP_STATE_FATAL_ERROR);
@@ -191,6 +192,11 @@ rd_bool_t rd_kafka_idemp_check_error(rd_kafka_t *rk,
         return rd_true;
 }
 
+
+rd_bool_t rd_kafka_idemp_check_error(rd_kafka_t *rk, rd_kafka_resp_err_t err,
+    const char *errstr, rd_bool_t is_fatal) {
+        return rd_kafka_idemp_check_error_reply(rk, err, errstr, is_fatal, NULL);
+}
 
 
 /**
@@ -417,8 +423,9 @@ static void rd_kafka_idemp_pid_timer_restart(rd_kafka_t *rk,
  * @locality rdkafka main thread
  * @locks none
  */
-void rd_kafka_idemp_request_pid_failed(rd_kafka_broker_t *rkb,
-                                       rd_kafka_resp_err_t err) {
+void rd_kafka_idemp_request_pid_failed_reply(rd_kafka_broker_t *rkb,
+                                       rd_kafka_resp_err_t err,
+                                       const rd_kafka_broker_reply_t *reply) {
         rd_kafka_t *rk = rkb->rkb_rk;
         char errstr[512];
 
@@ -438,7 +445,7 @@ void rd_kafka_idemp_request_pid_failed(rd_kafka_broker_t *rkb,
 
         rd_kafka_wrlock(rk);
 
-        if (rd_kafka_idemp_check_error(rk, err, errstr, rd_false)) {
+        if (rd_kafka_idemp_check_error_reply(rk, err, errstr, rd_false, reply)) {
                 rd_kafka_wrunlock(rk);
                 return; /* Fatal error */
         }
@@ -452,6 +459,8 @@ void rd_kafka_idemp_request_pid_failed(rd_kafka_broker_t *rkb,
 
         /* This error code is read by init_transactions() for propagation
          * to the application. */
+        rd_free(rk->rk_eos.txn_init_reply);
+        rk->rk_eos.txn_init_reply = rd_kafka_broker_reply_copy(reply);
         rk->rk_eos.txn_init_err = err;
 
         rd_kafka_idemp_set_state(rk, RD_KAFKA_IDEMP_STATE_REQ_PID);
@@ -462,6 +471,10 @@ void rd_kafka_idemp_request_pid_failed(rd_kafka_broker_t *rkb,
 
         /* Restart acquisition after a short wait */
         rd_kafka_idemp_pid_timer_restart(rk, rd_false, errstr);
+}
+
+void rd_kafka_idemp_request_pid_failed(rd_kafka_broker_t *rkb, rd_kafka_resp_err_t err) {
+        rd_kafka_idemp_request_pid_failed_reply(rkb, err, NULL);
 }
 
 
@@ -630,9 +643,10 @@ void rd_kafka_idemp_drain_reset(rd_kafka_t *rk, const char *reason) {
  * @locality any
  * @locks none
  */
-void rd_kafka_idemp_drain_epoch_bump0(rd_kafka_t *rk,
+void rd_kafka_idemp_drain_epoch_bump_source(rd_kafka_t *rk,
                                       rd_bool_t allow_txn_abort,
                                       rd_kafka_resp_err_t err,
+                                      const rd_kafka_broker_reply_t *reply,
                                       const char *fmt,
                                       ...) {
         va_list ap;
@@ -677,13 +691,32 @@ void rd_kafka_idemp_drain_epoch_bump0(rd_kafka_t *rk,
         if (requires_txn_abort) {
                 /* Transactions: bumping the epoch requires the current
                  *               transaction to be aborted first. */
-                rd_kafka_txn_set_abortable_error_with_bump(rk, err, "%s", buf);
+                rd_kafka_txn_set_abortable_error_reply(rk, err, rd_true, reply, "%s", buf);
 
         } else {
                 /* Idempotent producer: check right away if the drain could
                  *                      be done. */
                 rd_kafka_idemp_check_drain_done(rk);
         }
+}
+
+void rd_kafka_idemp_drain_epoch_bump0(rd_kafka_t *rk, rd_bool_t allow_txn_abort,
+    rd_kafka_resp_err_t err, const char *fmt, ...) {
+        va_list ap;
+        char buf[256];
+        va_start(ap, fmt);
+        rd_vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        rd_kafka_idemp_drain_epoch_bump_source(rk, allow_txn_abort, err, NULL, "%s", buf);
+}
+void rd_kafka_idemp_drain_epoch_bump_reply(rd_kafka_t *rk, rd_kafka_resp_err_t err,
+    const rd_kafka_broker_reply_t *reply, const char *fmt, ...) {
+        va_list ap;
+        char buf[256];
+        va_start(ap, fmt);
+        rd_vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        rd_kafka_idemp_drain_epoch_bump_source(rk, rd_true, err, reply, "%s", buf);
 }
 
 /**

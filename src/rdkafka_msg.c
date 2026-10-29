@@ -116,6 +116,7 @@ rd_kafka_check_produce(rd_kafka_t *rk, rd_kafka_error_t **errorp) {
 
 
 void rd_kafka_msg_destroy(rd_kafka_t *rk, rd_kafka_msg_t *rkm) {
+        rd_free(rkm->rkm_broker_reply);
         // FIXME
         if (rkm->rkm_flags & RD_KAFKA_MSG_F_ACCOUNT) {
                 rd_dassert(rk || rkm->rkm_rkmessage.rkt);
@@ -179,6 +180,7 @@ static rd_kafka_msg_t *rd_kafka_msg_new00(rd_kafka_topic_t *rkt,
         rkm->rkm_offset    = RD_KAFKA_OFFSET_INVALID;
         rkm->rkm_timestamp = 0;
         rkm->rkm_tstype    = RD_KAFKA_TIMESTAMP_NOT_AVAILABLE;
+        rkm->rkm_broker_reply = NULL;
         rkm->rkm_status    = RD_KAFKA_MSG_STATUS_NOT_PERSISTED;
         rkm->rkm_headers   = NULL;
 
@@ -1963,6 +1965,7 @@ rd_kafka_Produce_result_t *rd_kafka_Produce_result_new(int64_t offset,
 }
 
 void rd_kafka_Produce_result_destroy(rd_kafka_Produce_result_t *result) {
+        rd_free(result->reply);
         if (result->record_errors) {
                 int32_t i;
                 for (i = 0; i < result->record_errors_cnt; i++) {
@@ -1978,6 +1981,7 @@ rd_kafka_Produce_result_t *
 rd_kafka_Produce_result_copy(const rd_kafka_Produce_result_t *result) {
         rd_kafka_Produce_result_t *ret = rd_calloc(1, sizeof(*ret));
         *ret                           = *result;
+        ret->reply = rd_kafka_broker_reply_copy(result->reply);
         if (result->errstr)
                 ret->errstr = rd_strdup(result->errstr);
         if (result->record_errors) {
@@ -2618,4 +2622,9 @@ int unittest_msg(void) {
             (const struct ut_msg_range[]) {{1, 199999}, {0, 0}});
 
         return fails;
+}
+
+const rd_kafka_broker_reply_t *
+rd_kafka_message_broker_reply(const rd_kafka_message_t *message) {
+        return rd_kafka_message2msg((rd_kafka_message_t *)message)->rkm_broker_reply;
 }

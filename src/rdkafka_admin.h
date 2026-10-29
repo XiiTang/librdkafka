@@ -251,6 +251,7 @@ struct rd_kafka_ConfigResource_s {
                                           *   List of config props */
 
         /* Response */
+        rd_kafka_broker_reply_t *reply;
         rd_kafka_resp_err_t err; /**< Response error code */
         char *errstr;            /**< Response error string */
 

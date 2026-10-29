@@ -291,6 +291,7 @@ struct rd_kafka_op_s {
         int32_t rko_version;
         rd_kafka_resp_err_t rko_err;
         rd_kafka_error_t *rko_error;
+        rd_kafka_broker_reply_t *rko_broker_reply;
         int32_t rko_len;          /* Depends on type, typically the
                                    * message length. */
         rd_kafka_prio_t rko_prio; /**< In-queue priority.
@@ -765,6 +766,11 @@ void rd_kafka_q_op_err(rd_kafka_q_t *rkq,
                        rd_kafka_resp_err_t err,
                        const char *fmt,
                        ...) RD_FORMAT(printf, 3, 4);
+void rd_kafka_q_op_err_with_reply(rd_kafka_q_t *rkq,
+                       rd_kafka_resp_err_t err,
+                       const rd_kafka_broker_reply_t *reply,
+                       const char *fmt,
+                       ...) RD_FORMAT(printf, 4, 5);
 void rd_kafka_consumer_err(rd_kafka_q_t *rkq,
                            int32_t broker_id,
                            rd_kafka_resp_err_t err,
@@ -774,6 +780,17 @@ void rd_kafka_consumer_err(rd_kafka_q_t *rkq,
                            int64_t offset,
                            const char *fmt,
                            ...) RD_FORMAT(printf, 8, 9);
+
+void rd_kafka_consumer_err_with_reply(rd_kafka_q_t *rkq,
+                           int32_t broker_id,
+                           rd_kafka_resp_err_t err,
+                           int32_t version,
+                           const char *topic,
+                           rd_kafka_toppar_t *rktp,
+                           int64_t offset,
+                           const rd_kafka_broker_reply_t *reply,
+                           const char *fmt,
+                           ...) RD_FORMAT(printf, 9, 10);
 rd_kafka_op_t *rd_kafka_op_req0(rd_kafka_q_t *destq,
                                 rd_kafka_q_t *recvq,
                                 rd_kafka_op_t *rko,

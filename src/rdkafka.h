@@ -894,6 +894,32 @@ int rd_kafka_error_txn_requires_abort(const rd_kafka_error_t *error);
  *
  * @remark As a conveniance it is permitted to pass a NULL \p error.
  */
+/** Immutable facts decoded from the response belonging to this result.
+ * All pointers are borrowed until the result owner is destroyed. NULL/0
+ * explanation means no non-empty explanation was received. Native diagnostic
+ * strings and native error flags remain independent of these wire facts.
+ */
+typedef enum {
+        RD_KAFKA_REPLY_REQUEST, RD_KAFKA_REPLY_TOPIC, RD_KAFKA_REPLY_PARTITION,
+        RD_KAFKA_REPLY_GROUP, RD_KAFKA_REPLY_RESOURCE,
+        RD_KAFKA_REPLY_AUTHENTICATION
+} rd_kafka_reply_target_t;
+typedef struct rd_kafka_broker_reply_s {
+        int16_t api_key, api_version, code;
+        int32_t broker_id;
+        const char *peer;
+        rd_kafka_reply_target_t target;
+        const char *name;
+        size_t name_size;
+        int32_t partition;
+        int8_t resource_type;
+        const char *explanation;
+        size_t explanation_size;
+} rd_kafka_broker_reply_t;
+
+RD_EXPORT const rd_kafka_broker_reply_t *
+rd_kafka_error_broker_reply(const rd_kafka_error_t *error);
+
 RD_EXPORT
 void rd_kafka_error_destroy(rd_kafka_error_t *error);
 
@@ -10706,6 +10732,46 @@ typedef int (*rd_kafka_runtime_sasl_cb_t)(int action, const char *broker,
 RD_EXPORT void rd_kafka_conf_set_runtime_sasl_cb(rd_kafka_conf_t *conf,
     rd_kafka_runtime_sasl_cb_t callback);
 
+
+RD_EXPORT const rd_kafka_broker_reply_t *
+rd_kafka_event_broker_reply(const rd_kafka_event_t *event);
+RD_EXPORT const rd_kafka_broker_reply_t *
+rd_kafka_message_broker_reply(const rd_kafka_message_t *message);
+RD_EXPORT const rd_kafka_broker_reply_t *
+rd_kafka_topic_partition_broker_reply(const rd_kafka_topic_partition_t *partition);
+RD_EXPORT const rd_kafka_broker_reply_t *
+rd_kafka_topic_result_broker_reply(const rd_kafka_topic_result_t *result);
+RD_EXPORT const rd_kafka_broker_reply_t *
+rd_kafka_ConfigResource_broker_reply(const rd_kafka_ConfigResource_t *resource);
+
+
+RD_EXPORT rd_kafka_resp_err_t rd_kafka_metadata_with_error(
+    rd_kafka_t *, int, rd_kafka_topic_t *, const rd_kafka_metadata_t **, int,
+    rd_kafka_error_t **);
+RD_EXPORT const rd_kafka_broker_reply_t *rd_kafka_metadata_broker_reply(
+    const rd_kafka_metadata_t *, const char *, int32_t);
+
+typedef struct rd_kafka_group_list_broker_error_s {
+        int32_t broker_id;
+        const char *peer;
+        int16_t api_key, api_version;
+        const rd_kafka_error_t *error;
+} rd_kafka_group_list_broker_error_t;
+RD_EXPORT rd_kafka_resp_err_t rd_kafka_list_groups_with_error(
+    rd_kafka_t *, const char *, const struct rd_kafka_group_list **, int,
+    rd_kafka_error_t **, rd_kafka_group_list_broker_error_t **, size_t *);
+RD_EXPORT void rd_kafka_group_list_broker_errors_destroy(
+    rd_kafka_group_list_broker_error_t *, size_t);
+RD_EXPORT const rd_kafka_broker_reply_t *rd_kafka_group_info_broker_reply(
+    const struct rd_kafka_group_info *);
+
+RD_EXPORT rd_kafka_resp_err_t rd_kafka_committed_with_error(
+    rd_kafka_t *, rd_kafka_topic_partition_list_t *, int, rd_kafka_error_t **);
+RD_EXPORT rd_kafka_resp_err_t rd_kafka_offsets_for_times_with_error(
+    rd_kafka_t *, rd_kafka_topic_partition_list_t *, int, rd_kafka_error_t **);
+RD_EXPORT rd_kafka_resp_err_t rd_kafka_query_watermark_offsets_with_error(
+    rd_kafka_t *, const char *, int32_t, int64_t *, int64_t *, int, rd_kafka_error_t **);
+RD_EXPORT rd_kafka_error_t *rd_kafka_fatal_error_copy(rd_kafka_t *);
 #ifdef __cplusplus
 }
 #endif

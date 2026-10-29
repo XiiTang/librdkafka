@@ -241,6 +241,7 @@ typedef rd_kafka_resp_err_t(rd_kafka_make_req_cb_t)(rd_kafka_broker_t *rkb,
  *
  */
 struct rd_kafka_buf_s { /* rd_kafka_buf_t */
+        rd_kafka_broker_reply_t *rkbuf_broker_reply; /* Decoded response only. */
         TAILQ_ENTRY(rd_kafka_buf_s) rkbuf_link;
 
         int32_t rkbuf_corrid;

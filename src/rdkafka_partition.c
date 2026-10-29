@@ -2536,6 +2536,8 @@ rd_kafka_toppars_pause_resume(rd_kafka_t *rk,
             flag & RD_KAFKA_TOPPAR_F_APP_PAUSE ? "Application" : "Library",
             pause ? "pausing" : "resuming", partitions->cnt);
 
+        rd_kafka_topic_partition_list_clear_replies(partitions);
+
         for (i = 0; i < partitions->cnt; i++) {
                 rd_kafka_topic_partition_t *rktpar = &partitions->elems[i];
                 rd_kafka_toppar_t *rktp;
@@ -2780,8 +2782,12 @@ rd_kafka_topic_partition_update(rd_kafka_topic_partition_t *dst,
                 dstpriv->current_leader_epoch = srcpriv->current_leader_epoch;
 
                 dstpriv->topic_id = srcpriv->topic_id;
+                rd_free(dstpriv->reply);
+                dstpriv->reply = rd_kafka_broker_reply_copy(srcpriv->reply);
 
         } else if ((dstpriv = dst->_private)) {
+                rd_free(dstpriv->reply);
+                dstpriv->reply = NULL;
                 /* No private object in source, reset the fields. */
                 dstpriv->leader_epoch         = -1;
                 dstpriv->current_leader_epoch = -1;
@@ -2824,6 +2830,7 @@ static void rd_kafka_topic_partition_private_destroy(
     rd_kafka_topic_partition_private_t *parpriv) {
         if (parpriv->rktp)
                 rd_kafka_toppar_destroy(parpriv->rktp);
+        rd_free(parpriv->reply);
         rd_free(parpriv);
 }
 
@@ -4952,4 +4959,33 @@ rd_kafka_topic_partition_list_union_by_id(rd_kafka_topic_partition_list_t *a,
         return rd_kafka_topic_partition_list_union0(
             a, b, rd_kafka_topic_partition_by_id_cmp,
             rd_kafka_topic_partition_hash_by_id);
+}
+
+const rd_kafka_broker_reply_t *
+rd_kafka_topic_partition_broker_reply(const rd_kafka_topic_partition_t *partition) {
+        const rd_kafka_topic_partition_private_t *priv = partition->_private;
+        return priv ? priv->reply : NULL;
+}
+
+void rd_kafka_topic_partition_set_broker_reply(
+    rd_kafka_topic_partition_t *partition, rd_kafka_broker_t *broker,
+    const rd_kafka_buf_t *request, int16_t code) {
+        rd_kafka_topic_partition_private_t *priv =
+            rd_kafka_topic_partition_get_private(partition);
+        rd_free(priv->reply);
+        priv->reply = code ? rd_kafka_broker_reply_new(
+            broker, request, code, RD_KAFKA_REPLY_PARTITION,
+            partition->topic, strlen(partition->topic), partition->partition,
+            0, NULL, 0) : NULL;
+}
+
+void rd_kafka_topic_partition_list_clear_replies(rd_kafka_topic_partition_list_t *list) {
+        int i;
+        for (i = 0; i < list->cnt; i++) {
+                rd_kafka_topic_partition_private_t *priv = list->elems[i]._private;
+                if (priv) {
+                        rd_free(priv->reply);
+                        priv->reply = NULL;
+                }
+        }
 }

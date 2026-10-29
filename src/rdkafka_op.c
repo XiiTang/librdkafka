@@ -514,6 +514,7 @@ void rd_kafka_op_destroy(rd_kafka_op_t *rko) {
         RD_IF_FREE(rko->rko_rktp, rd_kafka_toppar_destroy);
 
         RD_IF_FREE(rko->rko_error, rd_kafka_error_destroy);
+        rd_free(rko->rko_broker_reply);
 
         rd_kafka_replyq_destroy(&rko->rko_replyq);
 
@@ -530,8 +531,9 @@ void rd_kafka_op_destroy(rd_kafka_op_t *rko) {
 /**
  * Propagate an error event to the application on a specific queue.
  */
-void rd_kafka_q_op_err(rd_kafka_q_t *rkq,
+void rd_kafka_q_op_err_with_reply(rd_kafka_q_t *rkq,
                        rd_kafka_resp_err_t err,
+                       const rd_kafka_broker_reply_t *reply,
                        const char *fmt,
                        ...) {
         va_list ap;
@@ -544,11 +546,22 @@ void rd_kafka_q_op_err(rd_kafka_q_t *rkq,
 
         rko                   = rd_kafka_op_new(RD_KAFKA_OP_ERR);
         rko->rko_err          = err;
+        rko->rko_broker_reply = rd_kafka_broker_reply_copy(reply);
         rko->rko_u.err.errstr = rd_strdup(buf);
 
         rd_kafka_q_enq(rkq, rko);
 }
 
+
+void rd_kafka_q_op_err(rd_kafka_q_t *q, rd_kafka_resp_err_t err,
+                       const char *fmt, ...) {
+        va_list ap;
+        char buf[2048];
+        va_start(ap, fmt);
+        rd_vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        rd_kafka_q_op_err_with_reply(q, err, NULL, "%s", buf);
+}
 
 
 /**
@@ -564,13 +577,14 @@ void rd_kafka_q_op_err(rd_kafka_q_t *rkq,
  *
  * @sa rd_kafka_q_op_err()
  */
-void rd_kafka_consumer_err(rd_kafka_q_t *rkq,
+void rd_kafka_consumer_err_with_reply(rd_kafka_q_t *rkq,
                            int32_t broker_id,
                            rd_kafka_resp_err_t err,
                            int32_t version,
                            const char *topic,
                            rd_kafka_toppar_t *rktp,
                            int64_t offset,
+                           const rd_kafka_broker_reply_t *reply,
                            const char *fmt,
                            ...) {
         va_list ap;
@@ -587,6 +601,7 @@ void rd_kafka_consumer_err(rd_kafka_q_t *rkq,
         rko->rko_u.err.offset = offset;
         rko->rko_u.err.errstr = rd_strdup(buf);
         rko->rko_u.err.rkm.rkm_broker_id = broker_id;
+        rko->rko_u.err.rkm.rkm_broker_reply = rd_kafka_broker_reply_copy(reply);
 
         if (rktp)
                 rko->rko_rktp = rd_kafka_toppar_keep(rktp);
@@ -597,6 +612,21 @@ void rd_kafka_consumer_err(rd_kafka_q_t *rkq,
 
 
         rd_kafka_q_enq(rkq, rko);
+}
+
+
+void rd_kafka_consumer_err(rd_kafka_q_t *rkq,
+                           int32_t broker_id, rd_kafka_resp_err_t err,
+                           int32_t version, const char *topic,
+                           rd_kafka_toppar_t *rktp, int64_t offset,
+                           const char *fmt, ...) {
+        va_list ap;
+        char buf[2048];
+        va_start(ap, fmt);
+        rd_vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        rd_kafka_consumer_err_with_reply(rkq, broker_id, err, version,
+                                         topic, rktp, offset, NULL, "%s", buf);
 }
 
 

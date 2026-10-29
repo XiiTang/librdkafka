@@ -575,6 +575,12 @@ void rd_kafka_broker_fail(rd_kafka_broker_t *rkb,
                           rd_kafka_resp_err_t err,
                           const char *fmt,
                           ...) RD_FORMAT(printf, 4, 5);
+void rd_kafka_broker_fail_with_reply(rd_kafka_broker_t *rkb,
+                          int level,
+                          rd_kafka_resp_err_t err,
+                          const rd_kafka_broker_reply_t *reply,
+                          const char *fmt,
+                          ...) RD_FORMAT(printf, 5, 6);
 
 void rd_kafka_broker_conn_closed(rd_kafka_broker_t *rkb,
                                  rd_kafka_resp_err_t err,

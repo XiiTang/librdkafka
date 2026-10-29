@@ -46,6 +46,7 @@ struct rd_kafka_topic_result_s {
         char *topic;             /**< Points to data */
         rd_kafka_resp_err_t err; /**< Error code */
         char *errstr;            /**< Points to data after topic, unless NULL */
+        rd_kafka_broker_reply_t *reply;
         char data[1];            /**< topic followed by errstr */
 };
 

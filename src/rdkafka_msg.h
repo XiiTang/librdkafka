@@ -77,6 +77,7 @@ typedef struct rd_kafka_Produce_result_record_error {
  * @struct Result and return values from ProduceResponse
  */
 typedef struct rd_kafka_Produce_result {
+        rd_kafka_broker_reply_t *reply;
         int64_t offset;    /**< Assigned offset of first message */
         int64_t timestamp; /**< (Possibly assigned) offset of first message */
         char *errstr;      /**< Common error message */
@@ -115,6 +116,7 @@ typedef struct rd_kafka_msg_s {
                                                * Unit is milliseconds since epoch (UTC).*/
 
 
+        rd_kafka_broker_reply_t *rkm_broker_reply;
         rd_kafka_headers_t *rkm_headers; /**< Parsed headers list, if any. */
 
         rd_kafka_msg_status_t rkm_status; /**< Persistence status. Updated in

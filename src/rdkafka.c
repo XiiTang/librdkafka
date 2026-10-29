@@ -828,12 +828,11 @@ rd_kafka_fatal_error(rd_kafka_t *rk, char *errstr, size_t errstr_size) {
  * @locality any
  * @locks none
  */
-int rd_kafka_set_fatal_error0(rd_kafka_t *rk,
+static int rd_kafka_set_fatal_error_v(rd_kafka_t *rk,
                               rd_dolock_t do_lock,
                               rd_kafka_resp_err_t err,
-                              const char *fmt,
-                              ...) {
-        va_list ap;
+                              const rd_kafka_broker_reply_t *reply,
+                              const char *fmt, va_list ap) {
         char buf[512];
 
         if (do_lock)
@@ -850,10 +849,9 @@ int rd_kafka_set_fatal_error0(rd_kafka_t *rk,
 
         rd_atomic32_set(&rk->rk_fatal.err, err);
 
-        va_start(ap, fmt);
         rd_vsnprintf(buf, sizeof(buf), fmt, ap);
-        va_end(ap);
         rk->rk_fatal.errstr = rd_strdup(buf);
+        rk->rk_fatal.reply = rd_kafka_broker_reply_copy(reply);
 
         if (do_lock)
                 rd_kafka_wrunlock(rk);
@@ -906,6 +904,27 @@ int rd_kafka_set_fatal_error0(rd_kafka_t *rk,
         return 1;
 }
 
+int rd_kafka_set_fatal_error0(rd_kafka_t *rk, rd_dolock_t do_lock,
+                            rd_kafka_resp_err_t err, const char *fmt, ...) {
+        va_list ap;
+        int result;
+        va_start(ap, fmt);
+        result = rd_kafka_set_fatal_error_v(rk, do_lock, err, NULL, fmt, ap);
+        va_end(ap);
+        return result;
+}
+int rd_kafka_set_fatal_error_reply(rd_kafka_t *rk, rd_dolock_t do_lock,
+                            rd_kafka_resp_err_t err,
+                            const rd_kafka_broker_reply_t *reply,
+                            const char *fmt, ...) {
+        va_list ap;
+        int result;
+        va_start(ap, fmt);
+        result = rd_kafka_set_fatal_error_v(rk, do_lock, err, reply, fmt, ap);
+        va_end(ap);
+        return result;
+}
+
 
 /**
  * @returns a copy of the current fatal error, if any, else NULL.
@@ -921,6 +940,7 @@ rd_kafka_error_t *rd_kafka_get_fatal_error(rd_kafka_t *rk) {
 
         rd_kafka_rdlock(rk);
         error = rd_kafka_error_new_fatal(err, "%s", rk->rk_fatal.errstr);
+        error->reply = rd_kafka_broker_reply_copy(rk->rk_fatal.reply);
         rd_kafka_rdunlock(rk);
 
         return error;
@@ -1037,6 +1057,7 @@ void rd_kafka_destroy_final(rd_kafka_t *rk) {
                 mtx_destroy(&rk->rk_curr_msgs.lock);
         }
 
+        rd_free(rk->rk_fatal.reply);
         if (rk->rk_fatal.errstr) {
                 rd_free(rk->rk_fatal.errstr);
                 rk->rk_fatal.errstr = NULL;
@@ -3659,13 +3680,16 @@ int rd_kafka_consumer_closed(rd_kafka_t *rk) {
 
 
 rd_kafka_resp_err_t
-rd_kafka_committed(rd_kafka_t *rk,
+rd_kafka_committed0(rd_kafka_t *rk,
                    rd_kafka_topic_partition_list_t *partitions,
-                   int timeout_ms) {
+                   int timeout_ms, rd_kafka_error_t **errorp) {
         rd_kafka_q_t *rkq;
         rd_kafka_resp_err_t err;
         rd_kafka_cgrp_t *rkcg;
         rd_ts_t abs_timeout = rd_timeout_init(timeout_ms);
+
+        if (partitions)
+                rd_kafka_topic_partition_list_clear_replies(partitions);
 
         if (!partitions)
                 return RD_KAFKA_RESP_ERR__INVALID_ARG;
@@ -3715,6 +3739,15 @@ rd_kafka_committed(rd_kafka_t *rk,
                                      rd_timeout_remains(abs_timeout)))
                                 err = RD_KAFKA_RESP_ERR__TIMED_OUT;
 
+                        if (errorp && err &&
+                            err != RD_KAFKA_RESP_ERR__TRANSPORT && err != RD_KAFKA_RESP_ERR__WAIT_COORD) {
+                                rd_kafka_topic_partition_list_update(partitions,
+                                    rko->rko_u.offset_fetch.partitions);
+                                *errorp = rd_kafka_error_new(err, NULL);
+                                if (err == rko->rko_err)
+                                        (*errorp)->reply = rd_kafka_broker_reply_copy(
+                                            rko->rko_broker_reply);
+                        }
                         rd_kafka_op_destroy(rko);
                 } else
                         err = RD_KAFKA_RESP_ERR__TIMED_OUT;
@@ -3758,6 +3791,7 @@ rd_kafka_position(rd_kafka_t *rk, rd_kafka_topic_partition_list_t *partitions) {
 
 
 struct _query_wmark_offsets_state {
+        rd_kafka_broker_reply_t *reply;
         rd_kafka_resp_err_t err;
         const char *topic;
         int32_t partition;
@@ -3832,19 +3866,23 @@ static void rd_kafka_query_wmark_offsets_resp_cb(rd_kafka_t *rk,
 
         state->offidx++;
 
-        if (err || state->offidx == 2) /* Error or Done */
+        if (err || state->offidx == 2) { /* Error or Done */
                 state->err = err;
+                rd_free(state->reply);
+                state->reply = err && rktpar && err == rktpar->err ?
+                    rd_kafka_broker_reply_copy(rd_kafka_topic_partition_broker_reply(rktpar)) : NULL;
+        }
 
         rd_kafka_topic_partition_list_destroy(offsets);
 }
 
 
-rd_kafka_resp_err_t rd_kafka_query_watermark_offsets(rd_kafka_t *rk,
+rd_kafka_resp_err_t rd_kafka_query_watermark_offsets0(rd_kafka_t *rk,
                                                      const char *topic,
                                                      int32_t partition,
                                                      int64_t *low,
                                                      int64_t *high,
-                                                     int timeout_ms) {
+                                                     int timeout_ms, rd_kafka_error_t **errorp) {
         rd_kafka_q_t *rkq;
         struct _query_wmark_offsets_state state;
         rd_ts_t ts_end = rd_timeout_init(timeout_ms);
@@ -3876,6 +3914,7 @@ rd_kafka_resp_err_t rd_kafka_query_watermark_offsets(rd_kafka_t *rk,
 
         /* Due to KAFKA-1588 we need to send a request for each wanted offset,
          * in this case one for the low watermark and one for the high. */
+        state.reply         = NULL;
         state.topic         = topic;
         state.partition     = partition;
         state.offsets[0]    = RD_KAFKA_OFFSET_BEGINNING;
@@ -3911,6 +3950,12 @@ rd_kafka_resp_err_t rd_kafka_query_watermark_offsets(rd_kafka_t *rk,
 
         rd_kafka_q_destroy_owner(rkq);
 
+        if (errorp && state.err) {
+                *errorp = rd_kafka_error_new(state.err, NULL);
+                (*errorp)->reply = state.reply;
+                state.reply = NULL;
+        }
+        rd_free(state.reply);
         if (state.err)
                 return state.err;
         else if (state.offidx != 2)
@@ -3977,6 +4022,8 @@ static void rd_kafka_get_offsets_for_times_resp_cb(rd_kafka_t *rk,
                                                    void *opaque) {
         struct _get_offsets_for_times *state;
         int actions = 0;
+        rd_kafka_topic_partition_list_t *parsed;
+        int i;
 
         if (err == RD_KAFKA_RESP_ERR__DESTROY) {
                 /* 'state' has gone out of scope when offsets_for_times()
@@ -3986,16 +4033,19 @@ static void rd_kafka_get_offsets_for_times_resp_cb(rd_kafka_t *rk,
 
         state = opaque;
 
+        parsed = rd_kafka_topic_partition_list_new(0);
         err = rd_kafka_handle_ListOffsets(rk, rkb, err, rkbuf, request,
-                                          state->results, &actions);
-        if (err == RD_KAFKA_RESP_ERR__IN_PROGRESS)
+                                          parsed, &actions);
+        if (err == RD_KAFKA_RESP_ERR__IN_PROGRESS) {
+                rd_kafka_topic_partition_list_destroy(parsed);
                 return; /* Retrying */
+        }
 
         if (actions & RD_KAFKA_ERR_ACTION_REFRESH) {
                 rd_kafka_topic_partition_t *rktpar;
                 /* Remove its cache in case the topic isn't a known topic. */
                 rd_kafka_wrlock(rk);
-                RD_KAFKA_TPLIST_FOREACH(rktpar, state->results) {
+                RD_KAFKA_TPLIST_FOREACH(rktpar, parsed) {
                         if (rktpar->err)
                                 rd_kafka_metadata_cache_delete_by_name(
                                     rk, rktpar->topic);
@@ -4011,22 +4061,27 @@ static void rd_kafka_get_offsets_for_times_resp_cb(rd_kafka_t *rk,
                 /* Retry */
                 state->state_version   = rd_kafka_brokers_get_state_version(rk);
                 request->rkbuf_retries = 0;
-                if (rd_kafka_buf_retry(rkb, request))
+                if (rd_kafka_buf_retry(rkb, request)) {
+                        rd_kafka_topic_partition_list_destroy(parsed);
                         return; /* Retry in progress */
+                }
                 /* FALLTHRU */
         }
 
         if (err && !state->err)
                 state->err = err;
 
+        for (i = 0; i < parsed->cnt; i++)
+                rd_kafka_topic_partition_list_add_copy(state->results, &parsed->elems[i]);
+        rd_kafka_topic_partition_list_destroy(parsed);
         state->wait_reply--;
 }
 
 
 rd_kafka_resp_err_t
-rd_kafka_offsets_for_times(rd_kafka_t *rk,
+rd_kafka_offsets_for_times0(rd_kafka_t *rk,
                            rd_kafka_topic_partition_list_t *offsets,
-                           int timeout_ms) {
+                           int timeout_ms, rd_kafka_error_t **errorp) {
         rd_kafka_q_t *rkq;
         struct _get_offsets_for_times state = RD_ZERO_INIT;
         rd_ts_t ts_end                      = rd_timeout_init(timeout_ms);
@@ -4035,6 +4090,9 @@ rd_kafka_offsets_for_times(rd_kafka_t *rk,
         rd_kafka_resp_err_t err;
         struct rd_kafka_partition_leader *leader;
         int tmout;
+
+        if (offsets)
+                rd_kafka_topic_partition_list_clear_replies(offsets);
 
         if (offsets->cnt == 0)
                 return RD_KAFKA_RESP_ERR__INVALID_ARG;
@@ -4046,6 +4104,8 @@ rd_kafka_offsets_for_times(rd_kafka_t *rk,
                                                           timeout_ms);
         if (err) {
                 rd_list_destroy(&leaders);
+                if (errorp)
+                        rd_kafka_topic_partition_list_reset_offsets(offsets, RD_KAFKA_OFFSET_INVALID);
                 return err;
         }
 
@@ -4077,7 +4137,9 @@ rd_kafka_offsets_for_times(rd_kafka_t *rk,
                 state.err = RD_KAFKA_RESP_ERR__TIMED_OUT;
 
         /* Then update the queried partitions. */
-        if (!state.err)
+        if (errorp)
+                rd_kafka_topic_partition_list_reset_offsets(offsets, RD_KAFKA_OFFSET_INVALID);
+        if (!state.err || errorp)
                 rd_kafka_topic_partition_list_update(offsets, state.results);
 
         rd_kafka_topic_partition_list_destroy(state.results);
@@ -4909,7 +4971,87 @@ struct list_groups_state {
         const char *desired_group;
         struct rd_kafka_group_list *grplist;
         int grplist_size;
+        rd_bool_t collect_errors;
+        rd_kafka_group_list_broker_error_t *broker_errors;
+        size_t broker_error_cnt;
+        rd_kafka_error_t *error;
 };
+
+
+/* The public group array retains its ABI. Its owned name allocation carries
+ * the optional projection, and is freed by the same group destructor. */
+struct rd_kafka_group_name {
+        rd_kafka_broker_reply_t *reply;
+        char name[1];
+};
+static void rd_kafka_group_info_clear(struct rd_kafka_group_info *gi) {
+        int i;
+        if (gi->group) {
+                struct rd_kafka_group_name *name = (struct rd_kafka_group_name *)((char *)gi->group -
+                    offsetof(struct rd_kafka_group_name, name));
+                rd_free(name->reply);
+                rd_free(name);
+        }
+        rd_free(gi->broker.host);
+        rd_free(gi->state);
+        rd_free(gi->protocol_type);
+        rd_free(gi->protocol);
+        for (i = 0; i < gi->member_cnt; i++) {
+                struct rd_kafka_group_member_info *mi = &gi->members[i];
+                rd_free(mi->member_id);
+                rd_free(mi->client_id);
+                rd_free(mi->client_host);
+                rd_free(mi->member_metadata);
+                rd_free(mi->member_assignment);
+        }
+        rd_free(gi->members);
+        memset(gi, 0, sizeof(*gi));
+}
+const rd_kafka_broker_reply_t *rd_kafka_group_info_broker_reply(
+    const struct rd_kafka_group_info *gi) {
+        const struct rd_kafka_group_name *name = (const struct rd_kafka_group_name *)((const char *)gi->group -
+            offsetof(struct rd_kafka_group_name, name));
+        return name->reply;
+}
+void rd_kafka_group_list_broker_errors_destroy(
+    rd_kafka_group_list_broker_error_t *errors, size_t count) {
+        size_t i;
+        for (i = 0; i < count; i++) {
+                rd_free((void *)errors[i].peer);
+                rd_kafka_error_destroy((rd_kafka_error_t *)errors[i].error);
+        }
+        rd_free(errors);
+}
+static void rd_kafka_list_groups_set_error(
+    struct list_groups_state *state, rd_kafka_broker_t *rkb,
+    const rd_kafka_buf_t *request, int16_t api_key,
+    rd_kafka_resp_err_t err, const rd_kafka_broker_reply_t *reply,
+    const rd_kafka_error_t *native_error) {
+        rd_kafka_error_destroy(state->error);
+        state->error = NULL;
+        state->err = err;
+        if (!err)
+                return;
+        state->error = native_error ? rd_kafka_error_copy(native_error) :
+            rd_kafka_error_new(err, NULL);
+        if (reply) {
+                rd_free(state->error->reply);
+                state->error->reply = rd_kafka_broker_reply_copy(reply);
+        }
+        if (state->collect_errors) {
+                rd_kafka_group_list_broker_error_t *item;
+                state->broker_errors = rd_realloc(state->broker_errors,
+                    (state->broker_error_cnt + 1) * sizeof(*state->broker_errors));
+                item = &state->broker_errors[state->broker_error_cnt++];
+                item->api_key = api_key;
+                item->api_version = request ? request->rkbuf_reqhdr.ApiVersion : -1;
+                rd_kafka_broker_lock(rkb);
+                item->broker_id = rkb->rkb_nodeid;
+                item->peer = rd_strdup(rkb->rkb_nodename);
+                rd_kafka_broker_unlock(rkb);
+                item->error = rd_kafka_error_copy(state->error);
+        }
+}
 
 static const char *rd_kafka_consumer_group_state_names[] = {
     "Unknown", "PreparingRebalance", "CompletingRebalance", "Stable", "Dead",
@@ -4962,6 +5104,7 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
         struct list_groups_state *state;
         const int log_decode_errors = LOG_ERR;
         int cnt;
+        struct rd_kafka_group_info building = RD_ZERO_INIT;
 
         if (err == RD_KAFKA_RESP_ERR__DESTROY) {
                 /* 'state' has gone out of scope due to list_groups()
@@ -4983,17 +5126,7 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
                 int MemberCnt;
                 struct rd_kafka_group_info *gi;
 
-                if (state->grplist->group_cnt == state->grplist_size) {
-                        /* Grow group array */
-                        state->grplist_size *= 2;
-                        state->grplist->groups =
-                            rd_realloc(state->grplist->groups,
-                                       state->grplist_size *
-                                           sizeof(*state->grplist->groups));
-                }
-
-                gi = &state->grplist->groups[state->grplist->group_cnt++];
-                memset(gi, 0, sizeof(*gi));
+                gi = &building;
 
                 rd_kafka_buf_read_i16(reply, &ErrorCode);
                 rd_kafka_buf_read_str(reply, &Group);
@@ -5002,7 +5135,9 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
                 rd_kafka_buf_read_str(reply, &Proto);
                 rd_kafka_buf_read_i32(reply, &MemberCnt);
 
-                if (MemberCnt > 100000) {
+                if (MemberCnt < 0 || MemberCnt > 100000 ||
+                    RD_KAFKAP_STR_IS_NULL(&Group) || RD_KAFKAP_STR_IS_NULL(&GroupState) ||
+                    RD_KAFKAP_STR_IS_NULL(&ProtoType) || RD_KAFKAP_STR_IS_NULL(&Proto)) {
                         err = RD_KAFKA_RESP_ERR__BAD_MSG;
                         goto err;
                 }
@@ -5014,7 +5149,16 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
                 rd_kafka_broker_unlock(rkb);
 
                 gi->err           = ErrorCode;
-                gi->group         = RD_KAFKAP_STR_DUP(&Group);
+                {
+                        size_t len = RD_KAFKAP_STR_LEN(&Group);
+                        struct rd_kafka_group_name *name = rd_calloc(1, sizeof(*name) + len);
+                        memcpy(name->name, Group.str, len);
+                        if (ErrorCode)
+                                name->reply = rd_kafka_broker_reply_new(
+                                    rkb, request, ErrorCode, RD_KAFKA_REPLY_GROUP,
+                                    Group.str, len, RD_KAFKA_PARTITION_UA, 0, NULL, 0);
+                        gi->group = name->name;
+                }
                 gi->state         = RD_KAFKAP_STR_DUP(&GroupState);
                 gi->protocol_type = RD_KAFKAP_STR_DUP(&ProtoType);
                 gi->protocol      = RD_KAFKAP_STR_DUP(&Proto);
@@ -5028,7 +5172,7 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
                         rd_kafkap_bytes_t Meta, Assignment;
                         struct rd_kafka_group_member_info *mi;
 
-                        mi = &gi->members[gi->member_cnt++];
+                        mi = &gi->members[gi->member_cnt];
                         memset(mi, 0, sizeof(*mi));
 
                         rd_kafka_buf_read_str(reply, &MemberId);
@@ -5037,6 +5181,13 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
                         rd_kafka_buf_read_kbytes(reply, &Meta);
                         rd_kafka_buf_read_kbytes(reply, &Assignment);
 
+                        if (RD_KAFKAP_STR_IS_NULL(&MemberId) ||
+                            RD_KAFKAP_STR_IS_NULL(&ClientId) ||
+                            RD_KAFKAP_STR_IS_NULL(&ClientHost) ||
+                            RD_KAFKAP_BYTES_LEN(&Meta) < 0 || RD_KAFKAP_BYTES_LEN(&Assignment) < 0) {
+                                err = RD_KAFKA_RESP_ERR__BAD_MSG;
+                                goto err;
+                        }
                         mi->member_id   = RD_KAFKAP_STR_DUP(&MemberId);
                         mi->client_id   = RD_KAFKAP_STR_DUP(&ClientId);
                         mi->client_host = RD_KAFKAP_STR_DUP(&ClientHost);
@@ -5061,15 +5212,30 @@ static void rd_kafka_DescribeGroups_resp_cb(rd_kafka_t *rk,
                                     rd_memdup(Assignment.data,
                                               mi->member_assignment_size);
                         }
+                        gi->member_cnt++;
                 }
+                if (state->grplist->group_cnt == state->grplist_size) {
+                        /* Grow group array */
+                        state->grplist_size *= 2;
+                        state->grplist->groups =
+                            rd_realloc(state->grplist->groups,
+                                       state->grplist_size *
+                                           sizeof(*state->grplist->groups));
+                }
+
+                state->grplist->groups[state->grplist->group_cnt++] = building;
+                memset(&building, 0, sizeof(building));
         }
 
 err:
-        state->err = err;
+        rd_kafka_group_info_clear(&building);
+        rd_kafka_list_groups_set_error(state, rkb, request,
+            RD_KAFKAP_DescribeGroups, err, NULL, NULL);
         return;
 
 err_parse:
-        state->err = reply->rkbuf_err;
+        err = reply->rkbuf_err;
+        goto err;
 }
 
 static void rd_kafka_ListGroups_resp_cb(rd_kafka_t *rk,
@@ -5082,6 +5248,7 @@ static void rd_kafka_ListGroups_resp_cb(rd_kafka_t *rk,
         const int log_decode_errors = LOG_ERR;
         int16_t ErrorCode;
         char **grps = NULL;
+        rd_kafka_broker_reply_t *wire_reply = NULL;
         int cnt, grpcnt, i = 0;
 
         if (err == RD_KAFKA_RESP_ERR__DESTROY) {
@@ -5100,6 +5267,9 @@ static void rd_kafka_ListGroups_resp_cb(rd_kafka_t *rk,
 
         rd_kafka_buf_read_i16(reply, &ErrorCode);
         if (ErrorCode) {
+                wire_reply = rd_kafka_broker_reply_new(
+                    rkb, request, ErrorCode, RD_KAFKA_REPLY_REQUEST,
+                    NULL, 0, RD_KAFKA_PARTITION_UA, 0, NULL, 0);
                 err = ErrorCode;
                 goto err;
         }
@@ -5142,9 +5312,10 @@ static void rd_kafka_ListGroups_resp_cb(rd_kafka_t *rk,
                     RD_KAFKA_REPLYQ(state->q, 0),
                     rd_kafka_DescribeGroups_resp_cb, state);
                 if (error) {
-                        rd_kafka_DescribeGroups_resp_cb(
-                            rk, rkb, rd_kafka_error_code(error), reply, request,
-                            opaque);
+                        state->wait_cnt--;
+                        rd_kafka_list_groups_set_error(state, rkb, NULL,
+                            RD_KAFKAP_DescribeGroups, rd_kafka_error_code(error),
+                            NULL, error);
                         rd_kafka_error_destroy(error);
                 }
 
@@ -5156,24 +5327,31 @@ static void rd_kafka_ListGroups_resp_cb(rd_kafka_t *rk,
         rd_free(grps);
 
 err:
-        state->err = err;
+        rd_kafka_list_groups_set_error(state, rkb, request,
+            RD_KAFKAP_ListGroups, err, wire_reply, NULL);
+        rd_free(wire_reply);
         return;
 
 err_parse:
         if (grps)
                 rd_free(grps);
-        state->err = reply->rkbuf_err;
+        err = reply->rkbuf_err;
+        goto err;
 }
 
 rd_kafka_resp_err_t
-rd_kafka_list_groups(rd_kafka_t *rk,
+rd_kafka_list_groups0(rd_kafka_t *rk,
                      const char *group,
                      const struct rd_kafka_group_list **grplistp,
-                     int timeout_ms) {
+                     int timeout_ms, rd_kafka_error_t **errorp,
+                     rd_kafka_group_list_broker_error_t **broker_errorsp,
+                     size_t *broker_error_cntp) {
         rd_kafka_broker_t *rkb;
         int rkb_cnt                    = 0;
         struct list_groups_state state = RD_ZERO_INIT;
         rd_ts_t ts_end                 = rd_timeout_init(timeout_ms);
+
+        state.collect_errors = broker_errorsp != NULL;
 
         /* Wait until metadata has been fetched from cluster so
          * that we have a full broker list.
@@ -5251,20 +5429,50 @@ rd_kafka_list_groups(rd_kafka_t *rk,
         rd_kafka_q_destroy_owner(state.q);
 
         if (state.wait_cnt > 0 && !state.err) {
-                if (state.grplist->group_cnt == 0)
-                        state.err = RD_KAFKA_RESP_ERR__TIMED_OUT;
-                else {
-                        *grplistp = state.grplist;
-                        return RD_KAFKA_RESP_ERR__PARTIAL;
-                }
+                state.err = state.grplist->group_cnt == 0 ?
+                    RD_KAFKA_RESP_ERR__TIMED_OUT : RD_KAFKA_RESP_ERR__PARTIAL;
+                rd_kafka_error_destroy(state.error);
+                state.error = NULL;
         }
-
-        if (state.err)
-                rd_kafka_group_list_destroy(state.grplist);
-        else
+        if (broker_errorsp) {
+                *broker_errorsp = state.broker_errors;
+                *broker_error_cntp = state.broker_error_cnt;
+        }
+        if (errorp) {
+                if (state.err)
+                        *errorp = state.error ? state.error : rd_kafka_error_new(state.err, NULL);
+                else
+                        rd_kafka_error_destroy(state.error);
                 *grplistp = state.grplist;
-
+        } else {
+                rd_kafka_error_destroy(state.error);
+                if (state.err && state.err != RD_KAFKA_RESP_ERR__PARTIAL)
+                        rd_kafka_group_list_destroy(state.grplist);
+                else
+                        *grplistp = state.grplist;
+        }
         return state.err;
+}
+
+rd_kafka_resp_err_t rd_kafka_list_groups_with_error(
+    rd_kafka_t *rk, const char *group, const struct rd_kafka_group_list **grplistp,
+    int timeout_ms, rd_kafka_error_t **errorp,
+    rd_kafka_group_list_broker_error_t **broker_errorsp, size_t *broker_error_cntp) {
+        rd_kafka_resp_err_t err;
+        *grplistp = NULL;
+        *errorp = NULL;
+        *broker_errorsp = NULL;
+        *broker_error_cntp = 0;
+        err = rd_kafka_list_groups0(rk, group, grplistp, timeout_ms,
+                                   errorp, broker_errorsp, broker_error_cntp);
+        if (err && !*errorp)
+                *errorp = rd_kafka_error_new(err, NULL);
+        return err;
+}
+rd_kafka_resp_err_t rd_kafka_list_groups(
+    rd_kafka_t *rk, const char *group, const struct rd_kafka_group_list **grplistp,
+    int timeout_ms) {
+        return rd_kafka_list_groups0(rk, group, grplistp, timeout_ms, NULL, NULL, NULL);
 }
 
 
@@ -5272,43 +5480,10 @@ void rd_kafka_group_list_destroy(const struct rd_kafka_group_list *grplist0) {
         struct rd_kafka_group_list *grplist =
             (struct rd_kafka_group_list *)grplist0;
 
-        while (grplist->group_cnt-- > 0) {
-                struct rd_kafka_group_info *gi;
-                gi = &grplist->groups[grplist->group_cnt];
+        while (grplist->group_cnt-- > 0)
+                rd_kafka_group_info_clear(&grplist->groups[grplist->group_cnt]);
 
-                if (gi->broker.host)
-                        rd_free(gi->broker.host);
-                if (gi->group)
-                        rd_free(gi->group);
-                if (gi->state)
-                        rd_free(gi->state);
-                if (gi->protocol_type)
-                        rd_free(gi->protocol_type);
-                if (gi->protocol)
-                        rd_free(gi->protocol);
-
-                while (gi->member_cnt-- > 0) {
-                        struct rd_kafka_group_member_info *mi;
-                        mi = &gi->members[gi->member_cnt];
-
-                        if (mi->member_id)
-                                rd_free(mi->member_id);
-                        if (mi->client_id)
-                                rd_free(mi->client_id);
-                        if (mi->client_host)
-                                rd_free(mi->client_host);
-                        if (mi->member_metadata)
-                                rd_free(mi->member_metadata);
-                        if (mi->member_assignment)
-                                rd_free(mi->member_assignment);
-                }
-
-                if (gi->members)
-                        rd_free(gi->members);
-        }
-
-        if (grplist->groups)
-                rd_free(grplist->groups);
+        rd_free(grplist->groups);
 
         rd_free(grplist);
 }
@@ -5542,4 +5717,55 @@ int64_t rd_kafka_Uuid_least_significant_bits(const rd_kafka_Uuid_t *uuid) {
 
 int64_t rd_kafka_Uuid_most_significant_bits(const rd_kafka_Uuid_t *uuid) {
         return uuid->most_significant_bits;
+}
+
+rd_kafka_resp_err_t rd_kafka_committed_with_error(
+    rd_kafka_t *rk, rd_kafka_topic_partition_list_t *parts, int timeout_ms,
+    rd_kafka_error_t **errorp) {
+        rd_kafka_resp_err_t err;
+        *errorp = NULL;
+        err = rd_kafka_committed0(rk, parts, timeout_ms, errorp);
+        if (err && !*errorp) *errorp = rd_kafka_error_new(err, NULL);
+        return err;
+}
+rd_kafka_resp_err_t rd_kafka_committed(
+    rd_kafka_t *rk, rd_kafka_topic_partition_list_t *parts, int timeout_ms) {
+        return rd_kafka_committed0(rk, parts, timeout_ms, NULL);
+}
+rd_kafka_resp_err_t rd_kafka_offsets_for_times_with_error(
+    rd_kafka_t *rk, rd_kafka_topic_partition_list_t *parts, int timeout_ms,
+    rd_kafka_error_t **errorp) {
+        rd_kafka_resp_err_t err;
+        *errorp = NULL;
+        err = rd_kafka_offsets_for_times0(rk, parts, timeout_ms, errorp);
+        if (err) {
+                *errorp = rd_kafka_error_new(err, NULL);
+                /* Early leader/construction failure returned before the richer
+                 * implementation could clear unanswered timestamp inputs. */
+                if (!parts->cnt || err == RD_KAFKA_RESP_ERR__INVALID_ARG)
+                        rd_kafka_topic_partition_list_reset_offsets(parts, RD_KAFKA_OFFSET_INVALID);
+        }
+        return err;
+}
+rd_kafka_resp_err_t rd_kafka_offsets_for_times(
+    rd_kafka_t *rk, rd_kafka_topic_partition_list_t *parts, int timeout_ms) {
+        return rd_kafka_offsets_for_times0(rk, parts, timeout_ms, NULL);
+}
+rd_kafka_resp_err_t rd_kafka_query_watermark_offsets_with_error(
+    rd_kafka_t *rk, const char *topic, int32_t partition, int64_t *low,
+    int64_t *high, int timeout_ms, rd_kafka_error_t **errorp) {
+        rd_kafka_resp_err_t err;
+        *errorp = NULL;
+        err = rd_kafka_query_watermark_offsets0(rk, topic, partition, low, high, timeout_ms, errorp);
+        if (err && !*errorp) *errorp = rd_kafka_error_new(err, NULL);
+        return err;
+}
+rd_kafka_resp_err_t rd_kafka_query_watermark_offsets(
+    rd_kafka_t *rk, const char *topic, int32_t partition, int64_t *low,
+    int64_t *high, int timeout_ms) {
+        return rd_kafka_query_watermark_offsets0(rk, topic, partition, low, high, timeout_ms, NULL);
+}
+
+rd_kafka_error_t *rd_kafka_fatal_error_copy(rd_kafka_t *rk) {
+        return rd_kafka_get_fatal_error(rk);
 }

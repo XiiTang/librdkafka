@@ -408,6 +408,7 @@ struct rd_kafka_s {
         /* First fatal error. */
         struct {
                 rd_atomic32_t err; /**< rd_kafka_resp_err_t */
+                rd_kafka_broker_reply_t *reply;
                 char *errstr;      /**< Protected by rk_lock */
                 int cnt;           /**< Number of errors raised, only
                                     *   the first one is stored. */
@@ -566,12 +567,14 @@ struct rd_kafka_s {
 
                 /**< Current transaction error. */
                 rd_kafka_resp_err_t txn_err;
+                rd_kafka_broker_reply_t *txn_reply;
 
                 /**< Current transaction error string, if any. */
                 char *txn_errstr;
 
                 /**< Last InitProducerIdRequest error. */
                 rd_kafka_resp_err_t txn_init_err;
+                rd_kafka_broker_reply_t *txn_init_reply;
 
                 /**< Waiting for transaction coordinator query response */
                 rd_bool_t txn_wait_coord;
@@ -1090,6 +1093,9 @@ rd_kafka_set_last_error(rd_kafka_resp_err_t err, int errnox) {
 }
 
 
+int rd_kafka_set_fatal_error_reply(rd_kafka_t *, rd_dolock_t,
+    rd_kafka_resp_err_t, const rd_kafka_broker_reply_t *, const char *, ...)
+    RD_FORMAT(printf, 5, 6);
 int rd_kafka_set_fatal_error0(rd_kafka_t *rk,
                               rd_dolock_t do_lock,
                               rd_kafka_resp_err_t err,
