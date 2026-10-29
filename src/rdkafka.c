@@ -876,13 +876,13 @@ static int rd_kafka_set_fatal_error_v(rd_kafka_t *rk,
          * while for all other client types (the producer) we propagate to
          * the standard error handler (typically error_cb). */
         if (rk->rk_type == RD_KAFKA_CONSUMER && rk->rk_cgrp)
-                rd_kafka_consumer_err(
+                rd_kafka_consumer_err_with_reply(
                     rk->rk_cgrp->rkcg_q, RD_KAFKA_NODEID_UA,
                     RD_KAFKA_RESP_ERR__FATAL, 0, NULL, NULL,
-                    RD_KAFKA_OFFSET_INVALID, "Fatal error: %s: %s",
+                    RD_KAFKA_OFFSET_INVALID, reply, "Fatal error: %s: %s",
                     rd_kafka_err2str(err), rk->rk_fatal.errstr);
         else
-                rd_kafka_op_err(rk, RD_KAFKA_RESP_ERR__FATAL,
+                rd_kafka_op_err_with_reply(rk, RD_KAFKA_RESP_ERR__FATAL, reply,
                                 "Fatal error: %s: %s", rd_kafka_err2str(err),
                                 rk->rk_fatal.errstr);
 
@@ -5768,4 +5768,112 @@ rd_kafka_resp_err_t rd_kafka_query_watermark_offsets(
 
 rd_kafka_error_t *rd_kafka_fatal_error_copy(rd_kafka_t *rk) {
         return rd_kafka_get_fatal_error(rk);
+}
+
+/* Production group callbacks, with complete wire frames and deliberately
+ * truncated tails. Calls are ordered here because scalar completion status is
+ * observable; no socket timing is used to select the order. */
+static rd_kafka_buf_t *ut_group_frame(rd_kafka_broker_t *rkb, int16_t api) {
+        rd_kafka_buf_t *frame = rd_kafka_buf_new(1, 128);
+        frame->rkbuf_rkb = rd_kafka_broker_keep(rkb);
+        frame->rkbuf_reqhdr.ApiKey = api;
+        return frame;
+}
+static void ut_group_member(rd_kafka_buf_t *frame) {
+        rd_kafka_buf_write_str(frame, "member", -1);
+        rd_kafka_buf_write_str(frame, "client", -1);
+        rd_kafka_buf_write_str(frame, "host", -1);
+        rd_kafka_buf_write_i32(frame, 0); /* metadata bytes */
+        rd_kafka_buf_write_i32(frame, 0); /* assignment bytes */
+}
+static void ut_group_header(rd_kafka_buf_t *frame, const char *name, int count) {
+        rd_kafka_buf_write_i16(frame, 0);
+        rd_kafka_buf_write_str(frame, name, -1);
+        rd_kafka_buf_write_str(frame, "Stable", -1);
+        rd_kafka_buf_write_str(frame, "consumer", -1);
+        rd_kafka_buf_write_str(frame, "range", -1);
+        rd_kafka_buf_write_i32(frame, count);
+}
+static void ut_group_state_init(struct list_groups_state *state) {
+        memset(state, 0, sizeof(*state));
+        state->collect_errors = rd_true;
+        state->grplist = rd_calloc(1, sizeof(*state->grplist));
+        state->grplist_size = 8;
+        state->grplist->groups = rd_calloc(8, sizeof(*state->grplist->groups));
+}
+static void ut_group_state_clear(struct list_groups_state *state) {
+        rd_kafka_group_list_destroy(state->grplist);
+        rd_kafka_group_list_broker_errors_destroy(state->broker_errors,
+                                                  state->broker_error_cnt);
+        rd_kafka_error_destroy(state->error);
+}
+int unittest_failure_rows_groups(void) {
+        rd_kafka_t *rk = rd_kafka_new(RD_KAFKA_PRODUCER, NULL, NULL, 0);
+        rd_kafka_broker_t *a = rd_kafka_broker_add_logical(rk, "reply-first");
+        rd_kafka_broker_t *b = rd_kafka_broker_add_logical(rk, "reply-second");
+        int order, tail;
+        for (order = 0; order < 3; order++) {
+                struct list_groups_state state;
+                rd_kafka_buf_t *refusal = ut_group_frame(a, RD_KAFKAP_ListGroups);
+                rd_kafka_buf_t *other = ut_group_frame(b, order == 2 ? RD_KAFKAP_ListGroups : RD_KAFKAP_DescribeGroups);
+                ut_group_state_init(&state);
+                state.wait_cnt = 2;
+                rd_kafka_buf_write_i16(refusal, 31);
+                if (order == 2)
+                        rd_kafka_buf_write_i16(other, 30);
+                else {
+                        rd_kafka_buf_write_i32(other, 1);
+                        ut_group_header(other, "complete", 1);
+                        ut_group_member(other);
+                }
+                rd_slice_init_full(&refusal->rkbuf_reader, &refusal->rkbuf_buf);
+                rd_slice_init_full(&other->rkbuf_reader, &other->rkbuf_buf);
+                if (order == 1)
+                        rd_kafka_DescribeGroups_resp_cb(rk, b, 0, other, other, &state);
+                rd_kafka_ListGroups_resp_cb(rk, a, 0, refusal, refusal, &state);
+                if (order == 0)
+                        rd_kafka_DescribeGroups_resp_cb(rk, b, 0, other, other, &state);
+                if (order == 2)
+                        rd_kafka_ListGroups_resp_cb(rk, b, 0, other, other, &state);
+                rd_kafka_buf_destroy(refusal);
+                rd_kafka_buf_destroy(other);
+                RD_UT_ASSERT(state.broker_error_cnt == (order == 2 ? 2 : 1), "every broker refusal survives");
+                RD_UT_ASSERT(state.err == (order == 0 ? 0 : order == 1 ? 31 : 30), "unchanged scalar native status");
+                RD_UT_ASSERT(state.grplist->group_cnt == (order == 2 ? 0 : 1), "completed groups survive");
+                RD_UT_ASSERT(rd_kafka_error_broker_reply(state.broker_errors[0].error)->code == 31,
+                             "first source outlives its response buffer");
+                if (order == 2)
+                        RD_UT_ASSERT(rd_kafka_error_broker_reply(state.broker_errors[1].error)->code == 30,
+                                     "second source has its own code");
+                ut_group_state_clear(&state);
+        }
+        for (tail = 0; tail < 2; tail++) {
+                struct list_groups_state state;
+                rd_kafka_buf_t *frame = ut_group_frame(a, RD_KAFKAP_DescribeGroups);
+                ut_group_state_init(&state);
+                state.wait_cnt = 1;
+                rd_kafka_buf_write_i32(frame, 2);
+                ut_group_header(frame, "complete", 1);
+                ut_group_member(frame);
+                ut_group_header(frame, "unfinished", tail ? 2 : 100001);
+                if (tail) {
+                        ut_group_member(frame);
+                        rd_kafka_buf_write_str(frame, "truncated-member", -1);
+                }
+                rd_slice_init_full(&frame->rkbuf_reader, &frame->rkbuf_buf);
+                rd_kafka_DescribeGroups_resp_cb(rk, a, 0, frame, frame, &state);
+                rd_kafka_buf_destroy(frame);
+                RD_UT_ASSERT(state.err == RD_KAFKA_RESP_ERR__BAD_MSG, "native decode error survives");
+                RD_UT_ASSERT(state.broker_error_cnt == 1 && state.grplist->group_cnt == 1,
+                             "only whole groups are published with the broker error");
+                RD_UT_ASSERT(!strcmp(state.grplist->groups[0].group, "complete") &&
+                             state.grplist->groups[0].member_cnt == 1 &&
+                             !strcmp(state.grplist->groups[0].members[0].client_id, "client"),
+                             "the complete prefix remains usable");
+                ut_group_state_clear(&state);
+        }
+        rd_kafka_broker_destroy(a);
+        rd_kafka_broker_destroy(b);
+        rd_kafka_destroy(rk);
+        RD_UT_PASS();
 }

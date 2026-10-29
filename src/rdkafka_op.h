@@ -753,14 +753,17 @@ int rd_kafka_op_error_reply(rd_kafka_op_t *rko, rd_kafka_error_t *error);
 
 #define rd_kafka_op_set_prio(rko, prio) ((rko)->rko_prio = prio)
 
-#define rd_kafka_op_err(rk, err, ...)                                          \
+#define rd_kafka_op_err_with_reply(rk, err, reply, ...)                                          \
         do {                                                                   \
                 if (!((rk)->rk_conf.enabled_events & RD_KAFKA_EVENT_ERROR)) {  \
                         rd_kafka_log(rk, LOG_ERR, "ERROR", __VA_ARGS__);       \
                         break;                                                 \
                 }                                                              \
-                rd_kafka_q_op_err((rk)->rk_rep, err, __VA_ARGS__);             \
+                rd_kafka_q_op_err_with_reply((rk)->rk_rep, err, reply, __VA_ARGS__);             \
         } while (0)
+#define rd_kafka_op_err(rk, err, ...) \
+        rd_kafka_op_err_with_reply(rk, err, NULL, __VA_ARGS__)
+
 
 void rd_kafka_q_op_err(rd_kafka_q_t *rkq,
                        rd_kafka_resp_err_t err,

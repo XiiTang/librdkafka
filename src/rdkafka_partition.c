@@ -2782,8 +2782,11 @@ rd_kafka_topic_partition_update(rd_kafka_topic_partition_t *dst,
                 dstpriv->current_leader_epoch = srcpriv->current_leader_epoch;
 
                 dstpriv->topic_id = srcpriv->topic_id;
-                rd_free(dstpriv->reply);
-                dstpriv->reply = rd_kafka_broker_reply_copy(srcpriv->reply);
+                {
+                        rd_kafka_broker_reply_t *reply = rd_kafka_broker_reply_copy(srcpriv->reply);
+                        rd_free(dstpriv->reply);
+                        dstpriv->reply = reply;
+                }
 
         } else if ((dstpriv = dst->_private)) {
                 rd_free(dstpriv->reply);
@@ -4399,6 +4402,11 @@ void rd_kafka_topic_partition_list_update(
                 d_priv->leader_epoch = s_priv->leader_epoch;
                 d_priv->current_leader_epoch = s_priv->current_leader_epoch;
                 d_priv->topic_id             = s_priv->topic_id;
+                {
+                        rd_kafka_broker_reply_t *reply = rd_kafka_broker_reply_copy(s_priv->reply);
+                        rd_free(d_priv->reply);
+                        d_priv->reply = reply;
+                }
         }
 }
 
