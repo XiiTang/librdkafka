@@ -23,19 +23,30 @@ under 1 ms after. Before #5457, Boundless's send_offsets test without a group co
 waited without end; its 0105 subtest passes after. Tests 0084, 0105
 (full), 0106, 0113, 0116 and 0117 pass on macOS arm64.
 
-An OffsetCommit is sent again only while it was never transmitted (Boundless
-W7b): a transmitted commit may have been processed, and resending it can
-overwrite a later commit. Upstream retried a transmitted OffsetCommit up to
-twice (#3398) and deferred one that failed with a transport error,
-NOT_COORDINATOR or COORDINATOR_NOT_AVAILABLE until the coordinator returned,
-then sent it again; Kafka's group coordinator also returns those two errors
-after the commit was appended (REQUEST_TIMED_OUT, NOT_ENOUGH_REPLICAS and
-NOT_LEADER_OR_FOLLOWER are mapped to them). The request now uses upstream's
-RD_KAFKA_REQUEST_NO_RETRIES, under which rd_kafka_buf_retry() retries a buffer
-only while rd_kafka_buf_was_sent() is false, and the consumer group defers
-only a commit whose request was never transmitted. A transmitted commit that
-fails ends with its error. KIP-848's re-commit of automatic commits after
-STALE_MEMBER_EPOCH is unchanged. Test 0117
+A manual OffsetCommit is sent again only while it was never transmitted
+(Boundless W7b). Upstream (`e1db7eaa`) retries a transmitted OffsetCommit up to
+twice (#3398), including COORDINATOR_LOAD_IN_PROGRESS and an all-partitions
+UNKNOWN_TOPIC_OR_PART reply. It also defers a commit that failed with a
+transport error, NOT_COORDINATOR or COORDINATOR_NOT_AVAILABLE until the
+coordinator returns, then sends it again. These retries do not serialize
+overlapping commits: a later commit can pass an older request during retry
+backoff, and the stale retry can overwrite the newer commit.
+
+For ordinary nontransactional commits, COORDINATOR_LOAD_IN_PROGRESS and an
+all-partitions UNKNOWN_TOPIC_OR_PART reply prove that the requested offsets
+were not appended. The fork still returns these refusals to the program,
+which decides whether to commit again, at the cost of upstream's automatic
+recovery. A mixed reply is not proof that every partition was unapplied.
+Transport failures, NOT_COORDINATOR, COORDINATOR_NOT_AVAILABLE and
+REQUEST_TIMED_OUT can instead leave the result ambiguous. Even a certainly
+unapplied request can become stale before its retry, so the fork keeps the
+same no-transmitted-retry policy for both kinds of failure.
+
+The request uses upstream's RD_KAFKA_REQUEST_NO_RETRIES, under which
+rd_kafka_buf_retry() retries a buffer only while rd_kafka_buf_was_sent() is
+false, and the consumer group defers only a commit whose request was never
+transmitted. A transmitted commit that fails ends with its error. KIP-848's
+re-commit of automatic commits after STALE_MEMBER_EPOCH is unchanged. Test 0117
 offset_commit_resent_only_if_never_transmitted: before, the transmitted commit
 was sent again and returned NO_ERROR (with only the retry limit, the deferral
 still sent it again); after, it ends with ERR__TRANSPORT, the
