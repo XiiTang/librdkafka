@@ -543,7 +543,7 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
      "not yet known and partitions that left the metadata count until "
      "their handles are destroyed. "
      "Creating a topic, a desired partition or an assignment, or a metadata "
-     "update adding partitions, past it is refused, creates nothing and "
+     "update adding partitions, past it is refused and "
      "raises the fatal error `ERR__PARTITION_POPULATION`. "
      "0 means no limit.",
      0, INT_MAX, 0},

@@ -55,10 +55,10 @@ and topic/desired partition handles without aggregate admission. The new optiona
 creation and retain places until final destruction. Logical coordinator places
 are included at client construction; the fixed INTERNAL dummy is infrastructure.
 Exhaustion retains a distinct fatal population code. Topic, produce, lookup and
-whole-assignment paths propagate refusal without null dereferences, retries or
+assignment paths propagate refusal without null dereferences, retries or
 fabricated success. An eager assignment can already have cleared its previous
 assignment when addition refuses, as upstream does for other addition errors.
-The patch preserves those actual effects. Broker list removal no longer refunds
+The existing first pass obtains and checks each handle before marking the assignment; it uses actual per-creation admission, without a quota predictor. The patch preserves those actual effects. Broker list removal no longer refunds
 a place while its broker object remains alive. Native threads, supplied transport,
 close and transmitted-commit retry behavior are unchanged.
 
@@ -67,6 +67,12 @@ PID, giving quadratic storage for distinct PIDs. Per-PID offset vectors now grow
 with their actual entries using checked sizes, without a new limit; the existing
 Fetch array-count decoder bound and read-committed lookup/pop/sort behavior stay.
 
-Regression owners: `0146-metadata_mock` population paths and
-`unittest_aborted_txns`. Verification for this work branch is recorded after the
-implementation run; these references are not a claim that a lane has passed.
+Regression evidence (macOS arm64, work branch): `TESTS=0146,0000
+RD_UT_TEST=aborted_txns .../test-runner -p1 -Q -l` passed. Population paths cover
+bootstrap/learned brokers, logical group allowance, retained replacement after
+list removal, UA/desired/metadata growth and assignment refusal. The retained
+broker test gates its real thread-exit interceptor, then observes refusal while
+the decommissioned object remains alive; the retained toppar test holds its real
+handle. The aborted suite checks linear aggregate slots, repeated PID offsets,
+next/pop and the existing Fetch count decoder at and beyond its bound. These
+focused results do not claim a complete native lane.

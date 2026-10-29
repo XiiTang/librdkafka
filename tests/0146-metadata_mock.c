@@ -589,7 +589,7 @@ static rd_kafka_resp_err_t population_wait_fatal(rd_kafka_t *rk,
  * only after the learned brokers are added: a producer holds 4 handles at
  * once, a consumer in a group 5.
  */
-static void do_test_broker_population_max(rd_bool_t group, int max) {
+static void do_test_broker_population_max(int role, int max) {
         rd_kafka_t *rk;
         const char *bootstraps;
         char bootstrap[64];
@@ -599,11 +599,11 @@ static void do_test_broker_population_max(rd_bool_t group, int max) {
         int32_t *ids;
         size_t cnt;
         char max_str[16];
-        int needed = 1 + 3 + (group ? 1 : 0);
+        int needed = 1 + 3 + (role ? 1 : 0);
         rd_kafka_resp_err_t err;
 
         SUB_TEST_QUICK("%s, broker.population.max %d",
-                       group ? "consumer in a group" : "producer", max);
+                       role == 1 ? "consumer in a group" : role == 2 ? "transactional producer" : "producer", max);
 
         mcluster = test_mock_cluster_new(3, &bootstraps);
         rd_snprintf(bootstrap, sizeof(bootstrap), "%.*s",
@@ -615,7 +615,9 @@ static void do_test_broker_population_max(rd_bool_t group, int max) {
         test_conf_set(conf, "broker.population.max", max_str);
         test_curr->is_fatal_cb = test_error_is_not_fatal_cb;
 
-        if (group) {
+        if (role == 2)
+                test_conf_set(conf, "transactional.id", "population");
+        if (role == 1) {
                 test_conf_set(conf, "group.id", "population");
                 rk = test_create_handle(RD_KAFKA_CONSUMER, conf);
         } else
@@ -635,6 +637,24 @@ static void do_test_broker_population_max(rd_bool_t group, int max) {
                 err = population_wait_fatal(rk, 1000);
                 TEST_ASSERT(!err, "expected no fatal error, not %s",
                             rd_kafka_err2name(err));
+                /* Drive the logical coordinator's real FindCoordinator path. */
+                if (role == 2) {
+                        rd_kafka_error_t *error =
+                            rd_kafka_init_transactions(rk, tmout_multip(5000));
+                        TEST_ASSERT(!error, "init transactions: %s",
+                                    error ? rd_kafka_error_string(error) : "");
+                } else if (role == 1) {
+                        rd_kafka_topic_partition_list_t *subscription =
+                            rd_kafka_topic_partition_list_new(1);
+                        rd_kafka_topic_partition_list_add(subscription,
+                                                         "population", -1);
+                        TEST_CALL_ERR__(rd_kafka_subscribe(rk, subscription));
+                        rd_kafka_topic_partition_list_destroy(subscription);
+                        TEST_CALL_ERR__(rd_kafka_mock_topic_create(
+                            mcluster, "population", 1, 1));
+                        test_consumer_wait_assignment(rk, rd_true);
+                }
+
         } else {
                 err = population_wait_fatal(rk, tmout_multip(5000));
                 TEST_ASSERT(err == RD_KAFKA_RESP_ERR__BROKER_POPULATION,
@@ -715,7 +735,7 @@ static void do_test_partition_population_max(int max) {
 /**
  * @brief Every path that creates a partition handle is admitted by
  *        partition.population.max before it allocates: a refused topic,
- *        desired partition or assignment creates nothing, fails with
+ *        desired partition or assignment fails with
  *        ERR__PARTITION_POPULATION and raises it as the fatal error.
  */
 static void do_test_partition_population_paths(void) {
@@ -731,7 +751,7 @@ static void do_test_partition_population_paths(void) {
         test_curr->is_fatal_cb = test_error_is_not_fatal_cb;
 
         /* Assignment: the topic's UA handle and two partitions do not fit
-         * in 2, so nothing is created. */
+         * in 2. The first pass can retain its admitted local handles. */
         test_conf_init(&conf, NULL, 10);
         test_conf_set(conf, "partition.population.max", "2");
         test_conf_set(conf, "group.id", "population");
@@ -745,11 +765,11 @@ static void do_test_partition_population_paths(void) {
                     "assign: expected %s, not %s",
                     rd_kafka_err2name(RD_KAFKA_RESP_ERR__PARTITION_POPULATION),
                     rd_kafka_err2name(err));
-        TEST_ASSERT(rd_atomic32_get(&rk->rk_partition_cnt) == 0,
-                    "assign: expected no handles, not %d",
+        TEST_ASSERT(rd_atomic32_get(&rk->rk_partition_cnt) <= 2,
+                    "assign: population exceeds 2: %d",
                     rd_atomic32_get(&rk->rk_partition_cnt));
-        TEST_ASSERT(rk->rk_topic_cnt == 0, "assign: expected no topic, not %d",
-                    rk->rk_topic_cnt);
+        TEST_ASSERT(rk->rk_consumer.assignment.all->cnt == 0,
+                    "refused first pass must not mark an assignment");
         err = rd_kafka_fatal_error(rk, errstr, sizeof(errstr));
         TEST_ASSERT(err == RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
                     "assign: expected fatal %s, not %s",
@@ -839,6 +859,103 @@ static void do_test_partition_population_paths(void) {
         SUB_TEST_PASS();
 }
 
+/* Thread-exit interceptors run after list removal and before final broker
+ * destruction. Hold the actual bootstrap broker there while adding another. */
+struct population_exit_gate {
+        mtx_t lock;
+        cnd_t changed;
+        int entered;
+        int released;
+};
+static rd_kafka_resp_err_t population_thread_exit(
+    rd_kafka_t *rk, rd_kafka_thread_type_t type, const char *name, void *opaque) {
+        struct population_exit_gate *gate = opaque;
+        if (type != RD_KAFKA_THREAD_BROKER || !strstr(name, "bootstrap"))
+                return RD_KAFKA_RESP_ERR_NO_ERROR;
+        mtx_lock(&gate->lock);
+        gate->entered = 1;
+        cnd_broadcast(&gate->changed);
+        while (!gate->released)
+                cnd_wait(&gate->changed, &gate->lock);
+        mtx_unlock(&gate->lock);
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+}
+static rd_kafka_resp_err_t population_on_new(
+    rd_kafka_t *rk, const rd_kafka_conf_t *conf, void *opaque,
+    char *errstr, size_t errstr_size) {
+        return rd_kafka_interceptor_add_on_thread_exit(
+            rk, "population final destruction", population_thread_exit, opaque);
+}
+static void do_test_population_retained_objects(void) {
+        struct population_exit_gate gate = {0};
+        rd_kafka_conf_t *conf;
+        rd_kafka_t *rk;
+        rd_kafka_mock_cluster_t *cluster;
+        const char *bootstraps;
+        const rd_kafka_metadata_t *md;
+        int added, held, entered;
+        int64_t deadline;
+        rd_kafka_resp_err_t fatal;
+        char reason[512];
+        SUB_TEST_QUICK();
+        mtx_init(&gate.lock, mtx_plain);
+        cnd_init(&gate.changed);
+        test_curr->is_fatal_cb = test_error_is_not_fatal_cb;
+        cluster = test_mock_cluster_new(1, &bootstraps);
+        test_conf_init(&conf, NULL, 10);
+        test_conf_set(conf, "bootstrap.servers", bootstraps);
+        test_conf_set(conf, "broker.population.max", "2");
+        rd_kafka_conf_interceptor_add_on_new(conf, "population gate", population_on_new, &gate);
+        rk = test_create_handle(RD_KAFKA_PRODUCER, conf);
+        if (!rd_kafka_metadata(rk, 0, NULL, &md, tmout_multip(5000)))
+                rd_kafka_metadata_destroy(md);
+        deadline = test_clock() + tmout_multip(5000) * 1000LL;
+        mtx_lock(&gate.lock);
+        while (!gate.entered && test_clock() < deadline)
+                cnd_timedwait_ms(&gate.changed, &gate.lock, 100);
+        entered = gate.entered;
+        mtx_unlock(&gate.lock);
+        held = rd_atomic32_get(&rk->rk_broker_population);
+        added = rd_kafka_brokers_add(rk, "127.0.0.1:1");
+        fatal = rd_kafka_fatal_error(rk, reason, sizeof(reason));
+        mtx_lock(&gate.lock);
+        gate.released = 1;
+        cnd_broadcast(&gate.changed);
+        mtx_unlock(&gate.lock);
+        rd_kafka_destroy(rk);
+        test_mock_cluster_destroy(cluster);
+        cnd_destroy(&gate.changed);
+        mtx_destroy(&gate.lock);
+        TEST_ASSERT(entered, "bootstrap broker did not reach final-destruction gate");
+        TEST_ASSERT(held == 2, "list removal refunded a live broker: %d", held);
+        TEST_ASSERT(added == 0 && fatal == RD_KAFKA_RESP_ERR__BROKER_POPULATION,
+                    "replacement must refuse while old object lives: added %d, %s", added, rd_kafka_err2name(fatal));
+
+        /* Keep a desired handle past removal from its topic's desired list. */
+        {
+                rd_kafka_toppar_t *old, *replacement;
+                rd_kafka_topic_t *topic;
+                test_conf_init(&conf, NULL, 10);
+                test_conf_set(conf, "partition.population.max", "2");
+                rk = test_create_handle(RD_KAFKA_PRODUCER, conf);
+                old = rd_kafka_toppar_get2(rk, "retained", 0, 0, 1);
+                TEST_ASSERT(old, "create original desired partition");
+                topic = old->rktp_rkt;
+                rd_kafka_topic_wrlock(topic);
+                rd_kafka_toppar_lock(old);
+                rd_kafka_toppar_desired_del(old);
+                rd_kafka_toppar_unlock(old);
+                rd_kafka_topic_wrunlock(topic);
+                replacement = rd_kafka_toppar_get2(rk, "retained", 1, 0, 1);
+                TEST_ASSERT(!replacement, "removed but retained handle still consumes its place");
+                TEST_ASSERT(rd_atomic32_get(&rk->rk_partition_cnt) == 2, "UA and retained partition stay admitted");
+                rd_kafka_toppar_destroy(old);
+                rd_kafka_destroy(rk);
+        }
+        test_curr->is_fatal_cb = NULL;
+        SUB_TEST_PASS();
+}
+
 int main_0146_metadata_mock(int argc, char **argv) {
         TEST_SKIP_MOCK_CLUSTER(0);
         int variation;
@@ -863,11 +980,14 @@ int main_0146_metadata_mock(int argc, char **argv) {
         do_test_broker_population_max(rd_false, 3);
         do_test_broker_population_max(rd_true, 5);
         do_test_broker_population_max(rd_true, 4);
+        do_test_broker_population_max(2, 5);
+        do_test_broker_population_max(2, 4);
 
         do_test_partition_population_max(0);
         do_test_partition_population_max(11);
         do_test_partition_population_max(10);
         do_test_partition_population_paths();
+        do_test_population_retained_objects();
 
         for (variation = 0; variation < 4; variation++) {
                 do_test_metadata_update_operation(

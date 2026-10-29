@@ -1709,6 +1709,20 @@ void rd_kafka_aborted_txns_sort(rd_kafka_aborted_txns_t *aborted_txns) {
 }
 
 
+/* Exercise the same array-count decoder used by Fetch before table creation. */
+static rd_kafka_resp_err_t unittest_aborted_count_decode(int32_t count) {
+        uint32_t encoded = htobe32((uint32_t)count);
+        rd_kafka_buf_t *rkbuf = rd_kafka_buf_new_shadow(&encoded, sizeof(encoded), NULL);
+        int32_t decoded;
+        int log_decode_errors = 0;
+        rd_kafka_resp_err_t error;
+        rd_kafka_buf_read_arraycnt(rkbuf, &decoded, RD_KAFKAP_ABORTED_TRANSACTIONS_MAX);
+err_parse:
+        error = rkbuf->rkbuf_err;
+        rd_kafka_buf_destroy(rkbuf);
+        return error;
+}
+
 /**
  * @brief Unit tests for all functions that operate on
  * rd_kafka_aborted_txns_t
@@ -1717,6 +1731,8 @@ int unittest_aborted_txns(void) {
         rd_kafka_aborted_txns_t *aborted_txns = NULL;
         int64_t start_offset;
 
+        RD_UT_ASSERT(unittest_aborted_count_decode(RD_KAFKAP_ABORTED_TRANSACTIONS_MAX) == RD_KAFKA_RESP_ERR_NO_ERROR, "existing array bound accepts its maximum");
+        RD_UT_ASSERT(unittest_aborted_count_decode(RD_KAFKAP_ABORTED_TRANSACTIONS_MAX + 1) == RD_KAFKA_RESP_ERR__BAD_MSG, "Fetch array decoder refuses excess before table creation");
         aborted_txns = rd_kafka_aborted_txns_new(7);
         rd_kafka_aborted_txns_add(aborted_txns, 1, 42);
         rd_kafka_aborted_txns_add(aborted_txns, 1, 44);

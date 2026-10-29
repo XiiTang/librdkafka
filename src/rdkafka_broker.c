@@ -4787,6 +4787,9 @@ static int rd_kafka_broker_thread_main(void *arg) {
  * Final destructor. Refcnt must be 0.
  */
 void rd_kafka_broker_destroy_final(rd_kafka_broker_t *rkb) {
+        rd_kafka_t *rk = rkb->rkb_rk;
+        rd_bool_t counted = rkb->rkb_source == RD_KAFKA_CONFIGURED ||
+                            rkb->rkb_source == RD_KAFKA_LEARNED;
 
         rd_assert(thrd_is_current(rkb->rkb_thread));
         rd_assert(TAILQ_EMPTY(&rkb->rkb_monitors));
@@ -4858,10 +4861,9 @@ void rd_kafka_broker_destroy_final(rd_kafka_broker_t *rkb) {
 
         rd_refcnt_destroy(&rkb->rkb_refcnt);
 
-        if (rkb->rkb_source == RD_KAFKA_CONFIGURED ||
-            rkb->rkb_source == RD_KAFKA_LEARNED)
-                rd_atomic32_sub(&rkb->rkb_rk->rk_broker_population, 1);
         rd_free(rkb);
+        if (counted)
+                rd_atomic32_sub(&rk->rk_broker_population, 1);
 }
 
 

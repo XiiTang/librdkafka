@@ -810,19 +810,17 @@ rd_kafka_assignment_add(rd_kafka_t *rk,
                  */
                 if (rktpar->offset == RD_KAFKA_OFFSET_INVALID)
                         rktpar->offset = RD_KAFKA_OFFSET_STORED;
-        }
 
-        /* Get toppar object for each partition, admitting the whole list
-         * before creating any: refused, the assignment is unchanged.
-         * This is to make sure the rktp stays alive while unassigning
-         * any previous assignment in the call to
-         * assignment_clear() below. */
-        if (rd_kafka_topic_partition_list_create_toppars(rk, partitions))
-                return rd_kafka_error_new(
-                    RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
-                    "Assigning %d partitions exceeds "
-                    "partition.population.max %d",
-                    partitions->cnt, rk->rk_conf.partition_population_max);
+                /* Obtain every handle before the mark/use pass below.
+                 * Creation admits each actual handle at its native entry;
+                 * refusal can leave admitted local handles, but no missing
+                 * handle is marked or used as an assignment. */
+                if (!rd_kafka_topic_partition_ensure_toppar(rk, rktpar, rd_true))
+                        return rd_kafka_error_new(
+                            RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
+                            "Assignment exceeds partition.population.max %d",
+                            rk->rk_conf.partition_population_max);
+        }
 
         /* Mark all partition objects as assigned and reset the stored
          * offsets back to invalid in case it was explicitly stored during
