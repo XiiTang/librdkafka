@@ -647,6 +647,9 @@ rd_kafka_resp_err_t rd_kafka_offset_store(rd_kafka_topic_t *app_rkt,
         rd_kafka_fetch_pos_t pos =
             RD_KAFKA_FETCH_POS(offset + 1, -1 /*no leader epoch known*/);
 
+        if (unlikely(!rkt))
+                return rd_kafka_last_error();
+
         /* Find toppar */
         rd_kafka_topic_rdlock(rkt);
         if (!(rktp = rd_kafka_toppar_get(rkt, partition, 0 /*!ua_on_miss*/))) {

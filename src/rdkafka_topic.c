@@ -264,6 +264,9 @@ rd_kafka_lwtopic_t *rd_kafka_lwtopic_new(rd_kafka_t *rk, const char *topic) {
  *
  *          This allows the application to (unknowingly) pass a light-weight
  *          topic object to any proper-aware public API.
+ *
+ *          NULL, with the last error set, if creating the proper topic is
+ *          refused (see rd_kafka_topic_new0()).
  */
 rd_kafka_topic_t *rd_kafka_topic_proper(rd_kafka_topic_t *app_rkt) {
         rd_kafka_lwtopic_t *lrkt;
@@ -271,15 +274,22 @@ rd_kafka_topic_t *rd_kafka_topic_proper(rd_kafka_topic_t *app_rkt) {
         if (likely(!(lrkt = rd_kafka_rkt_get_lw(app_rkt))))
                 return app_rkt;
 
-        /* Create proper topic object */
+        /* Create proper topic object: under the rk lock that admits its
+         * UA partition handle. */
         return rd_kafka_topic_new0(lrkt->lrkt_rk, lrkt->lrkt_topic, NULL, NULL,
-                                   0);
+                                   1 /*lock*/);
 }
 
 
 /**
- * @brief Create new topic handle.
+ * @brief Finds or creates the topic \p topic. Creating it creates its UA
+ *        partition handle, admitted by rd_kafka_partition_population_admit().
  *
+ * @returns NULL with the last error set on invalid input or configuration,
+ *          or ERR__PARTITION_POPULATION (and the fatal error raised) when
+ *          the UA handle exceeds partition.population.max.
+ *
+ * @locks rd_kafka_wrlock(rk) MUST be held unless \p do_lock is set.
  * @locality any
  */
 rd_kafka_topic_t *rd_kafka_topic_new0(rd_kafka_t *rk,
@@ -340,6 +350,16 @@ rd_kafka_topic_t *rd_kafka_topic_new0(rd_kafka_t *rk,
                              topic, conf_err);
                 rd_kafka_topic_conf_destroy(conf);
                 rd_kafka_set_last_error(RD_KAFKA_RESP_ERR__INVALID_ARG, EINVAL);
+                return NULL;
+        }
+
+        /* The UA partition handle created below. */
+        if (rd_kafka_partition_population_admit(rk, 1, "Topic creation")) {
+                if (do_lock)
+                        rd_kafka_wrunlock(rk);
+                rd_kafka_topic_conf_destroy(conf);
+                rd_kafka_set_last_error(RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
+                                        ENOBUFS);
                 return NULL;
         }
 
@@ -922,9 +942,11 @@ static void rd_kafka_toppar_idemp_msgid_restore(rd_kafka_topic_t *rkt,
  * @brief Update the number of partitions for a topic and takes actions
  *        accordingly.
  *
- * @returns 1 if the partition count changed, else 0.
+ * @returns 1 if the partition count changed, else 0: growth past
+ *          partition.population.max changes nothing and raises a fatal error.
  *
- * @locks rd_kafka_topic_wrlock(rkt) MUST be held.
+ * @locks rd_kafka_topic_wrlock(rkt) MUST be held, and rd_kafka_wrlock(rk)
+ *        when the partition count grows.
  */
 static int rd_kafka_topic_partition_cnt_update(rd_kafka_topic_t *rkt,
                                                int32_t partition_cnt) {
@@ -936,6 +958,20 @@ static int rd_kafka_topic_partition_cnt_update(rd_kafka_topic_t *rkt,
 
         if (likely(rkt->rkt_partition_cnt == partition_cnt))
                 return 0; /* No change in partition count */
+
+        if (partition_cnt > rkt->rkt_partition_cnt) {
+                /* Admit the partitions created below: those not already
+                 * desired, whose handles exist. */
+                int32_t added = partition_cnt - rkt->rkt_partition_cnt;
+                RD_LIST_FOREACH(rktp, &rkt->rkt_desp, i) {
+                        if (rktp->rktp_partition >= rkt->rkt_partition_cnt &&
+                            rktp->rktp_partition < partition_cnt)
+                                added--;
+                }
+                if (rd_kafka_partition_population_admit(
+                        rk, added, "Topic partition count growth"))
+                        return 0;
+        }
 
         if (unlikely(rkt->rkt_partition_cnt != 0 &&
                      !rd_kafka_terminating(rkt->rkt_rk)))

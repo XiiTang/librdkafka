@@ -208,7 +208,53 @@ void rd_kafka_toppar_op_version_bump(rd_kafka_toppar_t *rktp, int32_t version) {
 
 
 /**
- * Add new partition to topic.
+ * @brief Admits \p cnt new partition handles (UA handles included) under
+ *        partition.population.max before they are allocated. Every caller of
+ *        rd_kafka_toppar_new() admits the handles it creates here first; each
+ *        handle releases its place in rd_kafka_toppar_destroy_final().
+ *
+ * @returns ERR__PARTITION_POPULATION, with the fatal error raised and
+ *          nothing admitted, if the handles held and \p cnt exceed the limit.
+ *
+ * @locks rd_kafka_wrlock(rk) MUST be held: it serialises admissions.
+ */
+rd_kafka_resp_err_t rd_kafka_partition_population_admit(rd_kafka_t *rk,
+                                                        int32_t cnt,
+                                                        const char *what) {
+        int32_t max  = rk->rk_conf.partition_population_max;
+        int32_t held = rd_atomic32_get(&rk->rk_partition_cnt);
+
+        if (cnt <= 0)
+                return RD_KAFKA_RESP_ERR_NO_ERROR;
+
+        if (max > 0 && (int64_t)held + cnt > max) {
+                rd_kafka_set_fatal_error0(
+                    rk, RD_DONT_LOCK, RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
+                    "%s needs %" PRId32 " partition handles with %" PRId32
+                    " held: exceeds partition.population.max %" PRId32,
+                    what, cnt, held, max);
+                return RD_KAFKA_RESP_ERR__PARTITION_POPULATION;
+        }
+
+        rd_atomic32_add(&rk->rk_partition_cnt, cnt);
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+}
+
+/**
+ * @brief Returns \p cnt admitted places: of destroyed handles, or of
+ *        admitted handles that were not created.
+ *
+ * @locks none
+ */
+void rd_kafka_partition_population_release(rd_kafka_t *rk, int32_t cnt) {
+        if (cnt > 0)
+                rd_atomic32_sub(&rk->rk_partition_cnt, cnt);
+}
+
+
+/**
+ * Add new partition to topic. The caller has admitted it with
+ * rd_kafka_partition_population_admit().
  *
  * Locks: rd_kafka_topic_wrlock() must be held.
  * Locks: rd_kafka_wrlock() must be held.
@@ -343,6 +389,9 @@ void rd_kafka_toppar_destroy_final(rd_kafka_toppar_t *rktp) {
 
         rd_kafka_replyq_destroy(&rktp->rktp_replyq);
 
+        /* Admitted by rd_kafka_partition_population_admit(). */
+        rd_kafka_partition_population_release(rktp->rktp_rkt->rkt_rk, 1);
+
         rd_kafka_topic_destroy0(rktp->rktp_rkt);
 
         mtx_destroy(&rktp->rktp_lock);
@@ -429,9 +478,18 @@ rd_kafka_toppar_t *rd_kafka_toppar_get0(const char *func,
 }
 
 
+static rd_kafka_toppar_t *rd_kafka_toppar_get2_locked(rd_kafka_t *rk,
+                                                      const char *topic,
+                                                      int32_t partition,
+                                                      int create_on_miss);
+
 /**
  * Same as rd_kafka_toppar_get() but no need for locking and
  * looks up the topic first.
+ *
+ * @returns NULL if the topic is unknown and \p create_on_miss is false, or if
+ *          a handle it would create is refused (see
+ *          rd_kafka_partition_population_admit()).
  *
  * Locality: any
  * Locks: none
@@ -441,28 +499,42 @@ rd_kafka_toppar_t *rd_kafka_toppar_get2(rd_kafka_t *rk,
                                         int32_t partition,
                                         int ua_on_miss,
                                         int create_on_miss) {
-        rd_kafka_topic_t *rkt;
         rd_kafka_toppar_t *rktp;
 
         rd_kafka_wrlock(rk);
+        rktp = rd_kafka_toppar_get2_locked(rk, topic, partition,
+                                           create_on_miss);
+        rd_kafka_wrunlock(rk);
+
+        return rktp;
+}
+
+/**
+ * @brief rd_kafka_toppar_get2() with the rk lock, which admits the handles
+ *        it creates, held by the caller.
+ *
+ * @locks rd_kafka_wrlock(rk) MUST be held.
+ */
+static rd_kafka_toppar_t *rd_kafka_toppar_get2_locked(rd_kafka_t *rk,
+                                                      const char *topic,
+                                                      int32_t partition,
+                                                      int create_on_miss) {
+        rd_kafka_topic_t *rkt;
+        rd_kafka_toppar_t *rktp;
 
         /* Find or create topic */
         if (unlikely(!(rkt = rd_kafka_topic_find(rk, topic, 0 /*no-lock*/)))) {
-                if (!create_on_miss) {
-                        rd_kafka_wrunlock(rk);
+                if (!create_on_miss)
                         return NULL;
-                }
                 rkt = rd_kafka_topic_new0(rk, topic, NULL, NULL, 0 /*no-lock*/);
                 if (!rkt) {
-                        rd_kafka_wrunlock(rk);
                         rd_kafka_log(rk, LOG_ERR, "TOPIC",
                                      "Failed to create local topic \"%s\": %s",
-                                     topic, rd_strerror(errno));
+                                     topic,
+                                     rd_kafka_err2str(rd_kafka_last_error()));
                         return NULL;
                 }
         }
-
-        rd_kafka_wrunlock(rk);
 
         rd_kafka_topic_wrlock(rkt);
         rktp = rd_kafka_toppar_desired_add(rkt, partition);
@@ -640,7 +712,10 @@ void rd_kafka_toppar_desired_add0(rd_kafka_toppar_t *rktp) {
  * Adds 'partition' as a desired partition to topic 'rkt', or updates
  * an existing partition to be desired.
  *
- * Locks: rd_kafka_topic_wrlock() must be held.
+ * @returns NULL if the partition handle it would create is refused by
+ *          rd_kafka_partition_population_admit().
+ *
+ * Locks: rd_kafka_wrlock() and rd_kafka_topic_wrlock() must be held.
  */
 rd_kafka_toppar_t *rd_kafka_toppar_desired_add(rd_kafka_topic_t *rkt,
                                                int32_t partition) {
@@ -651,8 +726,12 @@ rd_kafka_toppar_t *rd_kafka_toppar_desired_add(rd_kafka_topic_t *rkt,
         if (!rktp)
                 rktp = rd_kafka_toppar_desired_get(rkt, partition);
 
-        if (!rktp)
+        if (!rktp) {
+                if (rd_kafka_partition_population_admit(rkt->rkt_rk, 1,
+                                                        "Desired partition"))
+                        return NULL;
                 rktp = rd_kafka_toppar_new(rkt, partition);
+        }
 
         rd_kafka_toppar_lock(rktp);
         rd_kafka_toppar_desired_add0(rktp);
@@ -3178,6 +3257,116 @@ rd_kafka_topic_partition_ensure_toppar(rd_kafka_t *rk,
                     0 /* not ua on miss */, create_on_miss);
 
         return parpriv->rktp;
+}
+
+
+/**
+ * @brief Sets the toppar of every element of \p rktparlist, creating the
+ *        missing handles all or none: the handles the list needs (the UA
+ *        handle of each new topic, the partitions the metadata cache
+ *        populates it with, and each desired partition) are admitted by
+ *        rd_kafka_partition_population_admit() together, before any is
+ *        created. All of it happens under one rk lock, which every admission
+ *        holds, so the handles admitted are the handles created.
+ *
+ * @param rktparlist sorted by topic, without duplicates.
+ *
+ * @returns ERR__PARTITION_POPULATION, with the fatal error raised, if the
+ *          handles exceed partition.population.max: no handle is created.
+ *
+ * @locks none: takes rd_kafka_wrlock(rk).
+ */
+rd_kafka_resp_err_t rd_kafka_topic_partition_list_create_toppars(
+    rd_kafka_t *rk,
+    rd_kafka_topic_partition_list_t *rktparlist) {
+        rd_kafka_resp_err_t err = RD_KAFKA_RESP_ERR_NO_ERROR;
+        rd_kafka_topic_t *rkt   = NULL;
+        const char *topic       = NULL;
+        int32_t known_cnt       = 0;
+        int64_t cnt             = 0;
+        int i;
+
+        rd_kafka_wrlock(rk);
+
+        for (i = 0; i < rktparlist->cnt; i++) {
+                rd_kafka_topic_partition_t *rktpar = &rktparlist->elems[i];
+                rd_kafka_toppar_t *rktp;
+
+                if (rd_kafka_topic_partition_get_private(rktpar)->rktp)
+                        continue;
+
+                if (!topic || strcmp(topic, rktpar->topic)) {
+                        if (rkt)
+                                rd_kafka_topic_destroy0(rkt);
+                        topic = rktpar->topic;
+                        rkt   = rd_kafka_topic_find(rk, topic, 0 /*no-lock*/);
+                        if (rkt) {
+                                known_cnt = 0; /* Read per partition below */
+                        } else {
+                                const struct rd_kafka_metadata_cache_entry
+                                    *rkmce = rd_kafka_metadata_cache_find(
+                                        rk, topic, 1 /*valid*/);
+                                /* rd_kafka_topic_new0() creates the UA
+                                 * handle and populates the cached
+                                 * partitions. */
+                                known_cnt = rkmce && !rkmce->rkmce_mtopic.err
+                                                ? rkmce->rkmce_mtopic
+                                                      .partition_cnt
+                                                : 0;
+                                cnt += 1 + known_cnt;
+                        }
+                }
+
+                if (!rkt) {
+                        if (rktpar->partition >= known_cnt)
+                                cnt++; /* Desired partition */
+                        continue;
+                }
+
+                rd_kafka_topic_rdlock(rkt);
+                if (rktpar->partition >= 0 &&
+                    rktpar->partition < rkt->rkt_partition_cnt)
+                        rktp = NULL; /* Known: exists */
+                else if ((rktp = rd_kafka_toppar_desired_get(
+                              rkt, rktpar->partition)))
+                        rd_kafka_toppar_destroy(rktp);
+                else
+                        cnt++; /* Desired partition */
+                rd_kafka_topic_rdunlock(rkt);
+        }
+
+        if (rkt)
+                rd_kafka_topic_destroy0(rkt);
+
+        if (cnt > INT32_MAX)
+                cnt = INT32_MAX;
+        err = rd_kafka_partition_population_admit(rk, (int32_t)cnt,
+                                                  "Partition list");
+        if (err) {
+                rd_kafka_wrunlock(rk);
+                return err;
+        }
+        /* The creations below admit each handle themselves, and fit. */
+        rd_kafka_partition_population_release(rk, (int32_t)cnt);
+
+        for (i = 0; i < rktparlist->cnt; i++) {
+                rd_kafka_topic_partition_t *rktpar = &rktparlist->elems[i];
+                rd_kafka_topic_partition_private_t *parpriv =
+                    rd_kafka_topic_partition_get_private(rktpar);
+
+                if (parpriv->rktp)
+                        continue;
+                parpriv->rktp = rd_kafka_toppar_get2_locked(
+                    rk, rktpar->topic, rktpar->partition, rd_true);
+                if (!parpriv->rktp) {
+                        err = RD_KAFKA_RESP_ERR__PARTITION_POPULATION;
+                        break;
+                }
+        }
+
+        rd_kafka_wrunlock(rk);
+
+        return err;
 }
 
 

@@ -245,6 +245,8 @@ struct rd_kafka_conf_s {
         int socket_keepalive;
         int socket_nagle_disable;
         int socket_max_fails;
+        int broker_population_max;
+        int partition_population_max;
         int (*runtime_connect_cb)(int, const char *, uint64_t, void *);
         rd_kafka_runtime_sasl_cb_t runtime_sasl_cb;
         int (*runtime_sasl_admit_cb)(const char *, void *);

@@ -395,6 +395,13 @@ rd_kafka_produceva(rd_kafka_t *rk, const rd_kafka_vu_t *vus, size_t cnt) {
                 case RD_KAFKA_VTYPE_TOPIC:
                         rkt = rd_kafka_topic_new0(rk, vu->u.cstr, NULL,
                                                   &existing, 1);
+                        if (unlikely(!rkt)) {
+                                err   = rd_kafka_last_error();
+                                error = rd_kafka_error_new(
+                                    err, "Failed to create topic: %s",
+                                    rd_kafka_err2str(err));
+                                goto err;
+                        }
                         if (!existing)
                                 rd_kafka_topic_fast_leader_query(
                                     rk, rd_true /* force */);
@@ -402,6 +409,13 @@ rd_kafka_produceva(rd_kafka_t *rk, const rd_kafka_vu_t *vus, size_t cnt) {
 
                 case RD_KAFKA_VTYPE_RKT:
                         rkt = rd_kafka_topic_proper(vu->u.rkt);
+                        if (unlikely(!rkt)) {
+                                err   = rd_kafka_last_error();
+                                error = rd_kafka_error_new(
+                                    err, "Failed to create topic: %s",
+                                    rd_kafka_err2str(err));
+                                goto err;
+                        }
                         rd_kafka_topic_keep(rkt);
                         break;
 
@@ -567,6 +581,10 @@ rd_kafka_resp_err_t rd_kafka_producev(rd_kafka_t *rk, ...) {
                 case RD_KAFKA_VTYPE_TOPIC:
                         rkt = rd_kafka_topic_new0(rk, va_arg(ap, const char *),
                                                   NULL, &existing, 1);
+                        if (unlikely(!rkt)) {
+                                err = rd_kafka_last_error();
+                                break;
+                        }
                         if (!existing)
                                 rd_kafka_topic_fast_leader_query(
                                     rk, rd_true /* force */);
@@ -575,6 +593,10 @@ rd_kafka_resp_err_t rd_kafka_producev(rd_kafka_t *rk, ...) {
                 case RD_KAFKA_VTYPE_RKT:
                         rkt = rd_kafka_topic_proper(
                             va_arg(ap, rd_kafka_topic_t *));
+                        if (unlikely(!rkt)) {
+                                err = rd_kafka_last_error();
+                                break;
+                        }
                         rd_kafka_topic_keep(rkt);
                         break;
 
@@ -640,8 +662,11 @@ rd_kafka_resp_err_t rd_kafka_producev(rd_kafka_t *rk, ...) {
 
         va_end(ap);
 
-        if (unlikely(!rkt))
-                return RD_KAFKA_RESP_ERR__INVALID_ARG;
+        if (unlikely(!rkt)) {
+                if (hdrs)
+                        rd_kafka_headers_destroy(hdrs);
+                return err ? err : RD_KAFKA_RESP_ERR__INVALID_ARG;
+        }
 
         if (likely(!err))
                 rkm = rd_kafka_msg_new0(
@@ -729,6 +754,13 @@ int rd_kafka_produce_batch(rd_kafka_topic_t *app_rkt,
         rd_kafka_resp_err_t all_err;
         rd_kafka_topic_t *rkt   = rd_kafka_topic_proper(app_rkt);
         rd_kafka_toppar_t *rktp = NULL;
+
+        if (unlikely(!rkt)) {
+                all_err = rd_kafka_last_error();
+                for (i = 0; i < message_cnt; i++)
+                        rkmessages[i].err = all_err;
+                return 0;
+        }
 
         /* Propagated per-message below */
         all_err = rd_kafka_check_produce(rkt->rkt_rk, NULL);

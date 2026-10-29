@@ -414,6 +414,10 @@ typedef enum {
         RD_KAFKA_RESP_ERR__INVALID_DIFFERENT_RECORD = -138,
         /** Broker is going away but client isn't terminating */
         RD_KAFKA_RESP_ERR__DESTROY_BROKER = -137,
+        /** broker.population.max reached */
+        RD_KAFKA_RESP_ERR__BROKER_POPULATION = -136,
+        /** partition.population.max reached */
+        RD_KAFKA_RESP_ERR__PARTITION_POPULATION = -135,
 
         /** End internal error codes */
         RD_KAFKA_RESP_ERR__END = -100,

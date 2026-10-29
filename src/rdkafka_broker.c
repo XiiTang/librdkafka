@@ -4858,6 +4858,9 @@ void rd_kafka_broker_destroy_final(rd_kafka_broker_t *rkb) {
 
         rd_refcnt_destroy(&rkb->rkb_refcnt);
 
+        if (rkb->rkb_source == RD_KAFKA_CONFIGURED ||
+            rkb->rkb_source == RD_KAFKA_LEARNED)
+                rd_atomic32_sub(&rkb->rkb_rk->rk_broker_population, 1);
         rd_free(rkb);
 }
 
@@ -4879,10 +4882,47 @@ rd_kafka_broker_t *rd_kafka_broker_internal(rd_kafka_t *rk) {
 
 
 /**
+ * @brief Admits one more configured or learned broker handle under
+ *        broker.population.max, raising the fatal error
+ *        RD_KAFKA_RESP_ERR__BROKER_POPULATION when it is reached.
+ *
+ * Every configured or learned handle counts until final destruction, so a
+ * decommissioned broker still counts while its replacement is added.
+ * The logical coordinators this client creates (the group coordinator of a
+ * consumer with a group.id, the transaction coordinator of a transactional
+ * producer) count from client creation and are never refused.
+ *
+ * @locks rd_kafka_wrlock(rk) MUST be held.
+ */
+static rd_bool_t rd_kafka_broker_population_admit(rd_kafka_t *rk,
+                                                  const char *name,
+                                                  uint16_t port) {
+        int cnt = rd_atomic32_get(&rk->rk_broker_population);
+
+        if (rk->rk_conf.broker_population_max == 0 ||
+            cnt < rk->rk_conf.broker_population_max) {
+                rd_atomic32_add(&rk->rk_broker_population, 1);
+                return rd_true;
+        }
+
+        rd_kafka_set_fatal_error0(rk, RD_DONT_LOCK,
+                                  RD_KAFKA_RESP_ERR__BROKER_POPULATION,
+                                  "Adding broker %s:%" PRIu16
+                                  " exceeds broker.population.max %d",
+                                  name, port,
+                                  rk->rk_conf.broker_population_max);
+        return rd_false;
+}
+
+
+/**
  * Adds a broker with refcount set to 1.
  * If 'source' is RD_KAFKA_INTERNAL an internal broker is added
  * that does not actually represent or connect to a real broker, it is used
  * for serving unassigned toppar's op queues.
+ *
+ * @returns NULL if the broker thread cannot be created or a configured or
+ *          learned broker is refused by broker.population.max.
  *
  * Locks: rd_kafka_wrlock(rk) must be held
  */
@@ -4897,6 +4937,10 @@ rd_kafka_broker_t *rd_kafka_broker_add(rd_kafka_t *rk,
         int r;
         sigset_t newset, oldset;
 #endif
+
+        if ((source == RD_KAFKA_CONFIGURED || source == RD_KAFKA_LEARNED) &&
+            !rd_kafka_broker_population_admit(rk, name, port))
+                return NULL;
 
         rkb = rd_calloc(1, sizeof(*rkb));
         rkb->rkb_runtime_id = ++rk->rk_runtime_broker_serial;
@@ -5060,6 +5104,8 @@ rd_kafka_broker_t *rd_kafka_broker_add(rd_kafka_t *rk,
                 rd_kafka_op_err(rk, RD_KAFKA_RESP_ERR__CRIT_SYS_RESOURCE,
                                 "Unable to create broker thread");
 
+                if (source == RD_KAFKA_CONFIGURED || source == RD_KAFKA_LEARNED)
+                        rd_atomic32_sub(&rk->rk_broker_population, 1);
                 rd_free(rkb);
 
 #ifndef _WIN32

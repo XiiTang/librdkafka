@@ -332,6 +332,10 @@ enum ErrorCode {
   ERR__INVALID_DIFFERENT_RECORD = -138,
   /** Broker is going away but client isn't terminating */
   ERR__DESTROY_BROKER = -137,
+  /** broker.population.max reached */
+  ERR__BROKER_POPULATION = -136,
+  /** partition.population.max reached */
+  ERR__PARTITION_POPULATION = -135,
 
   /** End internal error codes */
   ERR__END = -100,

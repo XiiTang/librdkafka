@@ -493,6 +493,10 @@ static const struct rd_kafka_err_desc rd_kafka_err_descs[] = {
               "the failure of this message too"),
     _ERR_DESC(RD_KAFKA_RESP_ERR__DESTROY_BROKER,
               "Local: Broker handle destroyed without termination"),
+    _ERR_DESC(RD_KAFKA_RESP_ERR__BROKER_POPULATION,
+              "Local: Broker population limit reached"),
+    _ERR_DESC(RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
+              "Local: Partition population limit reached"),
 
     _ERR_DESC(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown broker error"),
     _ERR_DESC(RD_KAFKA_RESP_ERR_NO_ERROR, "Success"),
@@ -2398,6 +2402,16 @@ rd_kafka_t *rd_kafka_new(rd_kafka_type_t type,
         rd_atomic64_init(&rk->rk_ts_last_poll, rk->rk_ts_created);
         rd_atomic32_init(&rk->rk_flushing, 0);
         rd_atomic32_init(&rk->rk_broker_cnt, 0);
+        rd_atomic32_init(
+            &rk->rk_broker_population,
+            (type == RD_KAFKA_CONSUMER && rk->rk_conf.group_id_str &&
+             *rk->rk_conf.group_id_str) ||
+                    (type == RD_KAFKA_PRODUCER &&
+                     rk->rk_conf.eos.transactional_id &&
+                     *rk->rk_conf.eos.transactional_id)
+                ? 1
+                : 0);
+        rd_atomic32_init(&rk->rk_partition_cnt, 0);
         rd_atomic32_init(&rk->rk_logical_broker_cnt, 0);
         rd_atomic32_init(&rk->rk_broker_up_cnt, 0);
         rd_atomic32_init(&rk->rk_broker_down_cnt, 0);
@@ -2955,9 +2969,16 @@ static RD_UNUSED int rd_kafka_consume_start0(rd_kafka_topic_t *rkt,
                 return -1;
         }
 
+        rd_kafka_wrlock(rkt->rkt_rk);
         rd_kafka_topic_wrlock(rkt);
         rktp = rd_kafka_toppar_desired_add(rkt, partition);
         rd_kafka_topic_wrunlock(rkt);
+        rd_kafka_wrunlock(rkt->rkt_rk);
+        if (!rktp) {
+                rd_kafka_set_last_error(RD_KAFKA_RESP_ERR__PARTITION_POPULATION,
+                                        ENOBUFS);
+                return -1;
+        }
 
         /* Verify offset */
         if (offset == RD_KAFKA_OFFSET_BEGINNING ||
@@ -2999,6 +3020,8 @@ int rd_kafka_consume_start(rd_kafka_topic_t *app_rkt,
                            int32_t partition,
                            int64_t offset) {
         rd_kafka_topic_t *rkt = rd_kafka_topic_proper(app_rkt);
+        if (unlikely(!rkt))
+                return -1;
         rd_kafka_dbg(rkt->rkt_rk, TOPIC, "START",
                      "Start consuming partition %" PRId32, partition);
         return rd_kafka_consume_start0(rkt, partition, offset, NULL);
@@ -3010,6 +3033,8 @@ int rd_kafka_consume_start_queue(rd_kafka_topic_t *app_rkt,
                                  rd_kafka_queue_t *rkqu) {
         rd_kafka_topic_t *rkt = rd_kafka_topic_proper(app_rkt);
 
+        if (unlikely(!rkt))
+                return -1;
         return rd_kafka_consume_start0(rkt, partition, offset, rkqu->rkqu_q);
 }
 
@@ -3043,6 +3068,9 @@ int rd_kafka_consume_stop(rd_kafka_topic_t *app_rkt, int32_t partition) {
         rd_kafka_topic_t *rkt = rd_kafka_topic_proper(app_rkt);
         rd_kafka_toppar_t *rktp;
         int r;
+
+        if (unlikely(!rkt))
+                return -1;
 
         if (partition == RD_KAFKA_PARTITION_UA) {
                 rd_kafka_set_last_error(RD_KAFKA_RESP_ERR__INVALID_ARG, EINVAL);
@@ -3080,6 +3108,9 @@ rd_kafka_resp_err_t rd_kafka_seek(rd_kafka_topic_t *app_rkt,
         rd_kafka_replyq_t replyq = RD_KAFKA_NO_REPLYQ;
 
         /* FIXME: simple consumer check */
+
+        if (unlikely(!rkt))
+                return rd_kafka_last_error();
 
         if (partition == RD_KAFKA_PARTITION_UA)
                 return RD_KAFKA_RESP_ERR__INVALID_ARG;
@@ -3230,6 +3261,9 @@ ssize_t rd_kafka_consume_batch(rd_kafka_topic_t *app_rkt,
         rd_kafka_toppar_t *rktp;
         ssize_t cnt;
 
+        if (unlikely(!rkt))
+                return -1;
+
         /* Get toppar */
         rd_kafka_topic_rdlock(rkt);
         rktp = rd_kafka_toppar_get(rkt, partition, 0 /*no ua on miss*/);
@@ -3330,6 +3364,9 @@ int rd_kafka_consume_callback(rd_kafka_topic_t *app_rkt,
         rd_kafka_topic_t *rkt = rd_kafka_topic_proper(app_rkt);
         rd_kafka_toppar_t *rktp;
         int r;
+
+        if (unlikely(!rkt))
+                return -1;
 
         /* Get toppar */
         rd_kafka_topic_rdlock(rkt);
@@ -3435,6 +3472,9 @@ rd_kafka_consume(rd_kafka_topic_t *app_rkt, int32_t partition, int timeout_ms) {
         rd_kafka_topic_t *rkt = rd_kafka_topic_proper(app_rkt);
         rd_kafka_toppar_t *rktp;
         rd_kafka_message_t *rkmessage;
+
+        if (unlikely(!rkt))
+                return NULL;
 
         rd_kafka_topic_rdlock(rkt);
         rktp = rd_kafka_toppar_get(rkt, partition, 0 /*no ua on miss*/);

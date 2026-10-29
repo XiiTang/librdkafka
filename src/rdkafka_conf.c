@@ -526,6 +526,27 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
      "The maximum propagation time is calculated from the time the "
      "topic is first referenced in the client, e.g., on produce().",
      0, 60 * 60 * 1000, 30 * 1000},
+    {_RK_GLOBAL, "broker.population.max", _RK_C_INT,
+     _RK(broker_population_max),
+     "Maximum number of broker handles the client holds at once: "
+     "bootstrap and learned brokers, brokers that are being decommissioned "
+     "or replaced until their handles are destroyed, and the logical group "
+     "and transaction coordinators, whose places are kept from client "
+     "creation. Adding a bootstrap or learned broker past it is refused and "
+     "raises the fatal error `ERR__BROKER_POPULATION`. "
+     "0 means no limit.",
+     0, INT_MAX, 0},
+    {_RK_GLOBAL, "partition.population.max", _RK_C_INT,
+     _RK(partition_population_max),
+     "Maximum number of partition handles of all topics the client holds "
+     "at once: each topic's unassigned-partition handle, desired partitions "
+     "not yet known and partitions that left the metadata count until "
+     "their handles are destroyed. "
+     "Creating a topic, a desired partition or an assignment, or a metadata "
+     "update adding partitions, past it is refused, creates nothing and "
+     "raises the fatal error `ERR__PARTITION_POPULATION`. "
+     "0 means no limit.",
+     0, INT_MAX, 0},
     {_RK_GLOBAL, "topic.blacklist", _RK_C_PATLIST, _RK(topic_blacklist),
      "Topic blacklist, a comma-separated list of regular expressions "
      "for matching topic names that should be ignored in "

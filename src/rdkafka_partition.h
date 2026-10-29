@@ -614,6 +614,13 @@ rd_kafka_toppar_t *rd_kafka_toppar_desired_get(rd_kafka_topic_t *rkt,
 void rd_kafka_toppar_desired_add0(rd_kafka_toppar_t *rktp);
 rd_kafka_toppar_t *rd_kafka_toppar_desired_add(rd_kafka_topic_t *rkt,
                                                int32_t partition);
+rd_kafka_resp_err_t rd_kafka_partition_population_admit(rd_kafka_t *rk,
+                                                        int32_t cnt,
+                                                        const char *what);
+void rd_kafka_partition_population_release(rd_kafka_t *rk, int32_t cnt);
+rd_kafka_resp_err_t rd_kafka_topic_partition_list_create_toppars(
+    rd_kafka_t *rk,
+    rd_kafka_topic_partition_list_t *rktparlist);
 void rd_kafka_toppar_desired_link(rd_kafka_toppar_t *rktp);
 void rd_kafka_toppar_desired_unlink(rd_kafka_toppar_t *rktp);
 void rd_kafka_toppar_desired_del(rd_kafka_toppar_t *rktp);

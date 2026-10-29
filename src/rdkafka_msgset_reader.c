@@ -116,7 +116,9 @@ typedef struct rd_kafka_aborted_txn_start_offsets_s {
         rd_avl_node_t avl_node;
         int64_t pid;
         int offsets_idx;
-        rd_list_t offsets;
+        int offsets_cnt;  /**< Start offsets in \p offsets */
+        int offsets_size; /**< Allocated elements of \p offsets */
+        int64_t *offsets; /**< Grown with the start offsets added */
 } rd_kafka_aborted_txn_start_offsets_t;
 
 
@@ -1528,7 +1530,7 @@ static int rd_kafka_aborted_txn_cmp_by_pid(const void *_a, const void *_b) {
  */
 static void rd_kafka_aborted_txn_node_destroy(void *_node_ptr) {
         rd_kafka_aborted_txn_start_offsets_t *node_ptr = _node_ptr;
-        rd_list_destroy(&node_ptr->offsets);
+        rd_free(node_ptr->offsets);
         rd_free(node_ptr);
 }
 
@@ -1599,11 +1601,10 @@ rd_kafka_aborted_txns_next_offset(rd_kafka_aborted_txns_t *aborted_txns,
         if (node_ptr == NULL)
                 return -1;
 
-        if (unlikely(node_ptr->offsets_idx >= rd_list_cnt(&node_ptr->offsets)))
+        if (unlikely(node_ptr->offsets_idx >= node_ptr->offsets_cnt))
                 return -1;
 
-        abort_start_offset = *(
-            (int64_t *)rd_list_elem(&node_ptr->offsets, node_ptr->offsets_idx));
+        abort_start_offset = node_ptr->offsets[node_ptr->offsets_idx];
 
         if (unlikely(abort_start_offset > max_offset))
                 return -1;
@@ -1658,24 +1659,38 @@ rd_kafka_aborted_txns_get_offset(const rd_kafka_aborted_txns_t *aborted_txns,
 void rd_kafka_aborted_txns_add(rd_kafka_aborted_txns_t *aborted_txns,
                                int64_t pid,
                                int64_t first_offset) {
-        int64_t *v;
         rd_kafka_aborted_txn_start_offsets_t *node_ptr =
             rd_kafka_aborted_txns_offsets_for_pid(aborted_txns, pid);
 
         if (!node_ptr) {
-                node_ptr              = rd_malloc(sizeof(*node_ptr));
-                node_ptr->pid         = pid;
-                node_ptr->offsets_idx = 0;
-                rd_list_init(&node_ptr->offsets, 0, NULL);
-                /* Each PID list has no more than AbortedTxnCnt elements */
-                rd_list_prealloc_elems(&node_ptr->offsets, sizeof(int64_t),
-                                       aborted_txns->cnt, 0);
+                node_ptr               = rd_malloc(sizeof(*node_ptr));
+                node_ptr->pid          = pid;
+                node_ptr->offsets_idx  = 0;
+                node_ptr->offsets_cnt  = 0;
+                node_ptr->offsets_size = 0;
+                node_ptr->offsets      = NULL;
                 RD_AVL_INSERT(&aborted_txns->avl, node_ptr, avl_node);
                 rd_list_add(&aborted_txns->list, node_ptr);
         }
 
-        v  = rd_list_add(&node_ptr->offsets, NULL);
-        *v = first_offset;
+        if (node_ptr->offsets_cnt == node_ptr->offsets_size) {
+                /* Grow with the entries added: each PID holds less than
+                 * twice its own entries. No PID has more entries than the
+                 * response's AbortedTxnCnt, which rd_kafka_buf_read_arraycnt()
+                 * bounds by RD_KAFKAP_ABORTED_TRANSACTIONS_MAX. */
+                size_t size = node_ptr->offsets_size > 0
+                                  ? (size_t)node_ptr->offsets_size * 2
+                                  : 1;
+                rd_assert(node_ptr->offsets_cnt < aborted_txns->cnt);
+                if (size > (size_t)aborted_txns->cnt)
+                        size = (size_t)aborted_txns->cnt;
+                rd_assert(size <= SIZE_MAX / sizeof(*node_ptr->offsets));
+                node_ptr->offsets      = rd_realloc(node_ptr->offsets,
+                                                    size * sizeof(*node_ptr->offsets));
+                node_ptr->offsets_size = (int)size;
+        }
+
+        node_ptr->offsets[node_ptr->offsets_cnt++] = first_offset;
 }
 
 
@@ -1688,7 +1703,8 @@ void rd_kafka_aborted_txns_sort(rd_kafka_aborted_txns_t *aborted_txns) {
         for (k = 0; k < rd_list_cnt(&aborted_txns->list); k++) {
                 rd_kafka_aborted_txn_start_offsets_t *el =
                     rd_list_elem(&aborted_txns->list, k);
-                rd_list_sort(&el->offsets, rd_kafka_offset_cmp);
+                qsort(el->offsets, (size_t)el->offsets_cnt,
+                      sizeof(*el->offsets), rd_kafka_offset_cmp);
         }
 }
 
@@ -1808,6 +1824,44 @@ int unittest_aborted_txns(void) {
                      start_offset);
 
         rd_kafka_aborted_txns_destroy(aborted_txns);
+
+        /* One aborted transaction for each of many distinct PIDs: the
+         * per-PID storage grows with the entries added, not with the
+         * response's entry count for every PID. */
+        {
+                const int32_t cnt = 1000;
+                int32_t pid;
+                size_t capacity = 0;
+                rd_kafka_aborted_txn_start_offsets_t *node;
+                int k;
+
+                aborted_txns = rd_kafka_aborted_txns_new(cnt);
+                for (pid = 0; pid < cnt; pid++)
+                        rd_kafka_aborted_txns_add(aborted_txns, pid, pid * 10);
+                rd_kafka_aborted_txns_sort(aborted_txns);
+
+                RD_LIST_FOREACH(node, &aborted_txns->list, k)
+                capacity += (size_t)node->offsets_size;
+                RD_UT_ASSERT(capacity <= 2 * (size_t)cnt,
+                             "%" PRId32 " entries of distinct PIDs hold %" PRIusz
+                             " offset slots, expected at most %" PRId32,
+                             cnt, capacity, 2 * cnt);
+
+                for (pid = 0; pid < cnt; pid++) {
+                        start_offset = rd_kafka_aborted_txns_pop_offset(
+                            aborted_txns, pid, INT64_MAX);
+                        RD_UT_ASSERT(start_offset == pid * 10,
+                                     "PID %" PRId32 " start offset %" PRId64
+                                     ", expected %" PRId32,
+                                     pid, start_offset, pid * 10);
+                        start_offset = rd_kafka_aborted_txns_get_offset(
+                            aborted_txns, pid);
+                        RD_UT_ASSERT(start_offset == -1,
+                                     "PID %" PRId32 " has a second offset %" PRId64,
+                                     pid, start_offset);
+                }
+                rd_kafka_aborted_txns_destroy(aborted_txns);
+        }
 
         RD_UT_PASS();
 }

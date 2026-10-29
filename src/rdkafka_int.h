@@ -290,6 +290,9 @@ struct rd_kafka_s {
         TAILQ_HEAD(, rd_kafka_broker_s) rk_brokers;
         rd_list_t rk_broker_by_id; /* Fast id lookups. */
         rd_atomic32_t rk_broker_cnt;
+        /* Configured/learned handles through final destruction, plus the
+         * logical coordinator places reserved at client construction. */
+        rd_atomic32_t rk_broker_population;
         uint64_t rk_runtime_broker_serial; /* protected by rk write lock */
         /**  Logical brokers count.
          *   Used for calculating ERR__ALL_BROKERS_DOWN. */
@@ -329,6 +332,10 @@ struct rd_kafka_s {
 
         TAILQ_HEAD(, rd_kafka_topic_s) rk_topics;
         int rk_topic_cnt;
+        /** Partition handles of all topics, UA handles included, from
+         *  admission until destroyed: checked against
+         *  partition.population.max. */
+        rd_atomic32_t rk_partition_cnt;
 
         struct rd_kafka_cgrp_s *rk_cgrp;
 
@@ -1109,9 +1116,12 @@ rd_kafka_fatal_error_code(rd_kafka_t *rk) {
          * 1) the idempotent producer
          * 2) static consumers (group.instance.id)
          * 3) Group using consumer protocol (Introduced in KIP-848). See exact
-         *    errors in rd_kafka_cgrp_handle_ConsumerGroupHeartbeat() */
+         *    errors in rd_kafka_cgrp_handle_ConsumerGroupHeartbeat()
+         * 4) broker.population.max and partition.population.max. */
         if (rd_kafka_producer_can_have_fatal_errors(rk) ||
-            rd_kafka_consumer_can_have_fatal_errors(rk))
+            rd_kafka_consumer_can_have_fatal_errors(rk) ||
+            rk->rk_conf.broker_population_max > 0 ||
+            rk->rk_conf.partition_population_max > 0)
                 return rd_atomic32_get(&rk->rk_fatal.err);
 
         return RD_KAFKA_RESP_ERR_NO_ERROR;
