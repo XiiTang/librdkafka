@@ -121,7 +121,6 @@ rd_kafka_fetch_pos_make(int64_t offset,
 #else
 #define RD_KAFKA_FETCH_POS0(offset, leader_epoch, validated)                   \
         rd_kafka_fetch_pos_make(offset, leader_epoch, validated)
-void rd_kafka_topic_partition_list_clear_replies(rd_kafka_topic_partition_list_t *);
 
 #endif
 
@@ -1193,5 +1192,7 @@ rd_kafka_topic_partition_list_t *rd_kafka_topic_partition_list_difference_by_id(
 rd_kafka_topic_partition_list_t *
 rd_kafka_topic_partition_list_union_by_id(rd_kafka_topic_partition_list_t *a,
                                           rd_kafka_topic_partition_list_t *b);
+
+void rd_kafka_topic_partition_list_clear_replies(rd_kafka_topic_partition_list_t *);
 
 #endif /* _RDKAFKA_PARTITION_H_ */

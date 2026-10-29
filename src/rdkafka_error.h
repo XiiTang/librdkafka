@@ -94,8 +94,9 @@ rd_kafka_error_new_txn_requires_abort(rd_kafka_resp_err_t code,
 rd_kafka_resp_err_t rd_kafka_error_to_legacy(rd_kafka_error_t *error,
                                              char *errstr,
                                              size_t errstr_size);
+struct rd_tmpabuf_s;
 size_t rd_kafka_broker_reply_size(const rd_kafka_broker_reply_t *);
 rd_kafka_broker_reply_t *rd_kafka_broker_reply_write(
-    rd_tmpabuf_t *, const rd_kafka_broker_reply_t *);
+    struct rd_tmpabuf_s *, const rd_kafka_broker_reply_t *);
 
 #endif /* _RDKAFKA_ERROR_H_ */
