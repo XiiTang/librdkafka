@@ -3789,10 +3789,7 @@ rd_kafka_handle_Produce_parse(rd_kafka_broker_t *rkb,
          * request we assume that the reply only contains one topic+partition
          * and that it is the same that we requested.
          * If not the broker is buggy. */
-        if (request->rkbuf_reqhdr.ApiVersion >= 10)
-                rd_kafka_buf_read_str(rkbuf, &TopicName);
-        else
-                rd_kafka_buf_skip_str(rkbuf);
+        rd_kafka_buf_read_str(rkbuf, &TopicName);
         rd_kafka_buf_read_arraycnt(rkbuf, &PartitionArrayCnt,
                                    RD_KAFKAP_PARTITIONS_MAX);
 

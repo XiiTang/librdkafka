@@ -136,3 +136,25 @@ consumer fork's `test_failure_rows` drives actual admin/offset/group frames,
 empty-partition Fetch through both Rust routes, transaction/fatal custody and
 owner destruction. Focused revision/platform results are recorded with the
 consumer implementation; no complete native lane is claimed here.
+
+
+### W5-D6 review corrections: Produce keys and full-i32 formatting
+
+The Produce decoder skipped TopicName below version 10, although D6's selected
+reply used it for every supported version. It now uses the existing string
+decoder unconditionally; version-specific leader tags and retry selection stay
+unchanged. The consumer's existing real Produce outcome regression negotiates
+version 9 as well as retaining the 30000 default-version case, and checks the
+ordinary result and publication-child capture after native destruction.
+
+At upstream v2.12.1 (`e1db7eaa`) and the prior pin, err2str/err2name subtract
+RD_KAFKA_RESP_ERR__BEGIN before checking the range. Safe UnknownCode(i32::MAX)
+therefore reaches signed overflow. Both native entries now short-circuit on the
+existing range guards before index arithmetic, preserving known output and the
+native Err-N?/ERR_N? fallbacks. The existing Rust native-formatting test exercises
+both i32 extremes through name and Display; sanitizer results are recorded with
+the review correction validation.
+
+The existing group callback unit now identifies errors by distinct decoded broker
+ids rather than collection position. Both callback schedules, two refusals,
+overall native status and complete-group-prefix assertions remain.

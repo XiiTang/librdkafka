@@ -737,31 +737,29 @@ void rd_kafka_get_err_descs(const struct rd_kafka_err_desc **errdescs,
 
 const char *rd_kafka_err2str(rd_kafka_resp_err_t err) {
         static RD_TLS char ret[32];
-        int idx = err - RD_KAFKA_RESP_ERR__BEGIN;
 
         if (unlikely(err <= RD_KAFKA_RESP_ERR__BEGIN ||
                      err >= RD_KAFKA_RESP_ERR_END_ALL ||
-                     !rd_kafka_err_descs[idx].desc)) {
+                     !rd_kafka_err_descs[err - RD_KAFKA_RESP_ERR__BEGIN].desc)) {
                 rd_snprintf(ret, sizeof(ret), "Err-%i?", err);
                 return ret;
         }
 
-        return rd_kafka_err_descs[idx].desc;
+        return rd_kafka_err_descs[err - RD_KAFKA_RESP_ERR__BEGIN].desc;
 }
 
 
 const char *rd_kafka_err2name(rd_kafka_resp_err_t err) {
         static RD_TLS char ret[32];
-        int idx = err - RD_KAFKA_RESP_ERR__BEGIN;
 
         if (unlikely(err <= RD_KAFKA_RESP_ERR__BEGIN ||
                      err >= RD_KAFKA_RESP_ERR_END_ALL ||
-                     !rd_kafka_err_descs[idx].desc)) {
+                     !rd_kafka_err_descs[err - RD_KAFKA_RESP_ERR__BEGIN].desc)) {
                 rd_snprintf(ret, sizeof(ret), "ERR_%i?", err);
                 return ret;
         }
 
-        return rd_kafka_err_descs[idx].name;
+        return rd_kafka_err_descs[err - RD_KAFKA_RESP_ERR__BEGIN].name;
 }
 
 
@@ -5817,9 +5815,12 @@ static void ut_group_state_clear(struct list_groups_state *state) {
 }
 int unittest_failure_rows_groups(void) {
         rd_kafka_t *rk = rd_kafka_new(RD_KAFKA_PRODUCER, NULL, NULL, 0);
-        rd_kafka_broker_t *a = rd_kafka_broker_add_logical(rk, "reply-first");
-        rd_kafka_broker_t *b = rd_kafka_broker_add_logical(rk, "reply-second");
+        const struct rd_kafka_metadata_broker first = {1, "127.0.0.1", 1};
+        const struct rd_kafka_metadata_broker second = {2, "127.0.0.1", 2};
+        rd_kafka_broker_t *a, *b;
         int order, tail;
+        rd_kafka_broker_update(rk, RD_KAFKA_PROTO_PLAINTEXT, &first, &a);
+        rd_kafka_broker_update(rk, RD_KAFKA_PROTO_PLAINTEXT, &second, &b);
         for (order = 0; order < 3; order++) {
                 struct list_groups_state state;
                 rd_kafka_buf_t *refusal = ut_group_frame(a, RD_KAFKAP_ListGroups);
@@ -5851,11 +5852,25 @@ int unittest_failure_rows_groups(void) {
                 RD_UT_ASSERT(state.broker_error_cnt == (order == 2 ? 2 : 1), "every broker refusal survives");
                 RD_UT_ASSERT(state.err == (order == 0 ? 0 : order == 1 ? 31 : 30), "unchanged scalar native status");
                 RD_UT_ASSERT(state.grplist->group_cnt == (order == 2 ? 0 : 1), "completed groups survive");
-                RD_UT_ASSERT(rd_kafka_error_broker_reply(state.broker_errors[0].error)->code == 31,
-                             "first source outlives its response buffer");
-                if (order == 2)
-                        RD_UT_ASSERT(rd_kafka_error_broker_reply(state.broker_errors[1].error)->code == 30,
-                                     "second source has its own code");
+                {
+                        size_t i;
+                        const rd_kafka_group_list_broker_error_t *first_error = NULL;
+                        const rd_kafka_group_list_broker_error_t *second_error = NULL;
+                        for (i = 0; i < state.broker_error_cnt; i++) {
+                                const rd_kafka_group_list_broker_error_t *error = &state.broker_errors[i];
+                                if (error->broker_id == first.id)
+                                        first_error = error;
+                                if (error->broker_id == second.id)
+                                        second_error = error;
+                        }
+                        RD_UT_ASSERT(first_error && rd_kafka_error_broker_reply(first_error->error)->code == 31 &&
+                                     rd_kafka_error_broker_reply(first_error->error)->broker_id == first.id,
+                                     "first broker source outlives its response buffer");
+                        if (order == 2)
+                                RD_UT_ASSERT(second_error && rd_kafka_error_broker_reply(second_error->error)->code == 30 &&
+                                             rd_kafka_error_broker_reply(second_error->error)->broker_id == second.id,
+                                             "second broker has its own code and source");
+                }
                 ut_group_state_clear(&state);
         }
         for (tail = 0; tail < 2; tail++) {
