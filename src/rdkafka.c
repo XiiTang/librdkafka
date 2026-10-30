@@ -5723,7 +5723,12 @@ rd_kafka_resp_err_t rd_kafka_committed_with_error(
     rd_kafka_t *rk, rd_kafka_topic_partition_list_t *parts, int timeout_ms,
     rd_kafka_error_t **errorp) {
         rd_kafka_resp_err_t err;
+        int i;
         *errorp = NULL;
+        if (parts) {
+                rd_kafka_topic_partition_list_reset_offsets(parts, RD_KAFKA_OFFSET_INVALID);
+                for (i = 0; i < parts->cnt; i++) parts->elems[i].err = RD_KAFKA_RESP_ERR_NO_ERROR;
+        }
         err = rd_kafka_committed0(rk, parts, timeout_ms, errorp);
         if (err && !*errorp) *errorp = rd_kafka_error_new(err, NULL);
         return err;
@@ -5736,7 +5741,9 @@ rd_kafka_resp_err_t rd_kafka_offsets_for_times_with_error(
     rd_kafka_t *rk, rd_kafka_topic_partition_list_t *parts, int timeout_ms,
     rd_kafka_error_t **errorp) {
         rd_kafka_resp_err_t err;
+        int i;
         *errorp = NULL;
+        for (i = 0; i < parts->cnt; i++) parts->elems[i].err = RD_KAFKA_RESP_ERR_NO_ERROR;
         err = rd_kafka_offsets_for_times0(rk, parts, timeout_ms, errorp);
         if (err) {
                 *errorp = rd_kafka_error_new(err, NULL);
@@ -5820,8 +5827,11 @@ int unittest_failure_rows_groups(void) {
                 ut_group_state_init(&state);
                 state.wait_cnt = 2;
                 rd_kafka_buf_write_i16(refusal, 31);
-                if (order == 2)
+                rd_kafka_buf_write_i32(refusal, 0);
+                if (order == 2) {
                         rd_kafka_buf_write_i16(other, 30);
+                        rd_kafka_buf_write_i32(other, 0);
+                }
                 else {
                         rd_kafka_buf_write_i32(other, 1);
                         ut_group_header(other, "complete", 1);

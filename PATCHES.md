@@ -87,3 +87,52 @@ the decommissioned object remains alive; the retained toppar test holds its real
 handle. The aborted suite checks linear aggregate slots, repeated PID offsets,
 next/pop and the existing Fetch count decoder at and beyond its bound. These
 focused results do not claim a complete native lane.
+
+## W5-D6: preserve the reply selected by the existing error owner
+
+Upstream v2.12.1 (`e1db7eaa`) reduces decoded errors to native integers and
+fallback C strings. SaslAuthenticate 58 becomes `_AUTHENTICATION`, admin timeout
+7 can become success, and unrelated requests purged by a broker failure inherit
+its native error. These values cannot establish which request the peer refused.
+The optional immutable `rd_kafka_broker_reply_t` keeps the original API/version,
+signed wire code, addressed broker, resource key and decoded-length explanation
+on the existing response, error, event, message or keyed result owner. Public
+getters borrow it; copies and destruction follow those owners. No public setter,
+client error history or new completion event is introduced.
+
+The richer synchronous metadata/watermark/offset/group entries share upstream's
+implementation and return its unchanged overall status. They transfer completed
+keyed results before the existing reply destruction, including error completion.
+Legacy entry points retain their success-only conventions. Group listing retains
+each broker's failed callback independently of the last scalar status, and
+publishes only fully decoded groups/members; upstream's early counts otherwise
+expose null fields when returning partial data. Unanswered offset inputs are
+invalidated by the richer entry rather than reported as broker-returned offsets.
+
+Transaction and first-fatal reply copies use the existing locks and source
+selection. A previously selected local abortable error remains the EndTxn
+answer even if EndTxn subsequently receives a peer error. Produce results,
+metadata cache copies, DeleteRecords fanout and consumer error events carry the
+selected source through their existing transfers. Transport failures, local
+parse/state errors, intermediate retry replies and synthesized EOF have no reply.
+
+Upstream's Fetch EOF synthesis can overwrite a received partition refusal on an
+empty partition. It now requires a successful response before synthesizing EOF;
+Apache Kafka's FetchCollector.initialize likewise handles errors before successful
+fetch state. The real empty-partition Fetch regression otherwise receives no
+application error. Fetch request-level errors retain request scope. This changes
+neither the existing application-error branches nor their suppression/backoff.
+
+Comparison with upstream: existing codec/correlation, retry actions, transaction
+flags, deadlines, callback dispatch, purge and close stay in place; the prior
+no-transmitted-OffsetCommit-retry patch remains intact. Reply custody is attached
+only after successful decoding and only to the result selected for publication.
+Length-bearing peer text stays separate from native fallback diagnostics.
+
+Regression entry points: native `0000`, `RD_UT_TEST=failure_rows`, drives the
+actual ListGroups/DescribeGroups callbacks (callback ordering, multiple broker
+refusals and incomplete tails) and EndTxn's earlier-local-error selection. The
+consumer fork's `test_failure_rows` drives actual admin/offset/group frames,
+empty-partition Fetch through both Rust routes, transaction/fatal custody and
+owner destruction. Focused revision/platform results are recorded with the
+consumer implementation; no complete native lane is claimed here.

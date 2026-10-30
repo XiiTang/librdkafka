@@ -418,6 +418,7 @@ static int unittest_rdclock(void) {
 extern int unittest_string(void);
 extern int unittest_cgrp(void);
 extern int unittest_failure_rows_groups(void);
+extern int unittest_failure_rows_endtxn(void);
 extern int unittest_mock_cluster(void);
 #if WITH_SASL_SCRAM
 extern int unittest_scram(void);
@@ -485,6 +486,7 @@ int rd_unittest(void) {
             {"aborted_txns", unittest_aborted_txns},
             {"cgrp", unittest_cgrp},
             {"failure_rows_groups", unittest_failure_rows_groups},
+            {"failure_rows_endtxn", unittest_failure_rows_endtxn},
 #if WITH_SASL_SCRAM
             {"scram", unittest_scram},
 #endif

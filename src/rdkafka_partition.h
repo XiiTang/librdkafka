@@ -1195,4 +1195,6 @@ rd_kafka_topic_partition_list_union_by_id(rd_kafka_topic_partition_list_t *a,
 
 void rd_kafka_topic_partition_list_clear_replies(rd_kafka_topic_partition_list_t *);
 
+void rd_kafka_topic_partition_copy_broker_reply(rd_kafka_topic_partition_t *, const rd_kafka_topic_partition_t *);
+
 #endif /* _RDKAFKA_PARTITION_H_ */

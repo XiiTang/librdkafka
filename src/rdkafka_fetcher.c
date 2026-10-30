@@ -187,7 +187,8 @@ static void rd_kafka_fetch_reply_handle_partition_error(
     const struct rd_kafka_toppar_ver *tver,
     rd_kafka_resp_err_t err,
     int64_t HighwaterMarkOffset,
-    const rd_kafka_buf_t *request) {
+    const rd_kafka_buf_t *request,
+    rd_kafka_reply_target_t reply_target) {
 
         rd_rkb_dbg(rkb, FETCH, "FETCHERR",
                    "%.*s [%" PRId32 "]: Fetch failed at %s: %s",
@@ -299,10 +300,11 @@ static void rd_kafka_fetch_reply_handle_partition_error(
                  * further Fetch requests. */
                 if (rktp->rktp_last_error != err) {
                         rd_kafka_broker_reply_t *reply = rd_kafka_broker_reply_new(
-                    rkb, request, err, RD_KAFKA_REPLY_PARTITION,
-                    rktp->rktp_rkt->rkt_topic->str,
-                    RD_KAFKAP_STR_LEN(rktp->rktp_rkt->rkt_topic),
-                    rktp->rktp_partition, 0, NULL, 0);
+                    rkb, request, err, reply_target,
+                    reply_target == RD_KAFKA_REPLY_PARTITION ? rktp->rktp_rkt->rkt_topic->str : NULL,
+                    reply_target == RD_KAFKA_REPLY_PARTITION ? RD_KAFKAP_STR_LEN(rktp->rktp_rkt->rkt_topic) : 0,
+                    reply_target == RD_KAFKA_REPLY_PARTITION ? rktp->rktp_partition : RD_KAFKA_PARTITION_UA,
+                    0, NULL, 0);
                         rd_kafka_consumer_err_with_reply(
                             rktp->rktp_fetchq, rd_kafka_broker_id(rkb), err,
                             tver->version, NULL, rktp,
@@ -336,10 +338,11 @@ static void rd_kafka_fetch_reply_handle_partition_error(
                 rd_dassert(tver->version > 0);
                 {
                 rd_kafka_broker_reply_t *reply = rd_kafka_broker_reply_new(
-                    rkb, request, err, RD_KAFKA_REPLY_PARTITION,
-                    rktp->rktp_rkt->rkt_topic->str,
-                    RD_KAFKAP_STR_LEN(rktp->rktp_rkt->rkt_topic),
-                    rktp->rktp_partition, 0, NULL, 0);
+                    rkb, request, err, reply_target,
+                    reply_target == RD_KAFKA_REPLY_PARTITION ? rktp->rktp_rkt->rkt_topic->str : NULL,
+                    reply_target == RD_KAFKA_REPLY_PARTITION ? RD_KAFKAP_STR_LEN(rktp->rktp_rkt->rkt_topic) : 0,
+                    reply_target == RD_KAFKA_REPLY_PARTITION ? rktp->rktp_partition : RD_KAFKA_PARTITION_UA,
+                    0, NULL, 0);
                 rd_kafka_consumer_err_with_reply(
                     rktp->rktp_fetchq, rd_kafka_broker_id(rkb), err,
                     tver->version, NULL, rktp,
@@ -716,7 +719,7 @@ static rd_kafka_resp_err_t rd_kafka_fetch_reply_handle_partition(
 
         /* If this is the last message of the queue,
          * signal EOF back to the application. */
-        if (end_offset == rktp->rktp_offsets.fetch_pos.offset &&
+        if (!hdr.ErrorCode && end_offset == rktp->rktp_offsets.fetch_pos.offset &&
             rktp->rktp_offsets.eof_offset != end_offset) {
                 hdr.ErrorCode = RD_KAFKA_RESP_ERR__PARTITION_EOF;
                 rktp->rktp_offsets.eof_offset = end_offset;
@@ -726,7 +729,7 @@ static rd_kafka_resp_err_t rd_kafka_fetch_reply_handle_partition(
                 /* Handle partition-level errors. */
                 rd_kafka_fetch_reply_handle_partition_error(
                     rkb, rktp, tver, hdr.ErrorCode, hdr.HighwaterMarkOffset,
-                    request);
+                    request, ErrorCode ? RD_KAFKA_REPLY_REQUEST : RD_KAFKA_REPLY_PARTITION);
 
                 rd_kafka_buf_skip(rkbuf, hdr.MessageSetSize);
                 goto done;

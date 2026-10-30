@@ -4078,6 +4078,7 @@ rd_kafka_DeleteRecords_response_merge(rd_kafka_op_t *rko_fanout,
 
                 respart->offset = partition->offset;
                 respart->err    = partition->err;
+                rd_kafka_topic_partition_copy_broker_reply(respart, partition);
         }
 }
 
@@ -4574,6 +4575,7 @@ void rd_kafka_DeleteRecords(rd_kafka_t *rk,
 
         /* Copy offsets list and store it on the request op */
         copied_offsets = rd_kafka_topic_partition_list_copy(offsets);
+        rd_kafka_topic_partition_list_clear_replies(copied_offsets);
         if (rd_kafka_topic_partition_list_has_duplicates(
                 copied_offsets, rd_false /*check partition*/)) {
                 rd_kafka_topic_partition_list_destroy(copied_offsets);

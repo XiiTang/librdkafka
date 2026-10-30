@@ -3335,3 +3335,48 @@ void rd_kafka_txns_init(rd_kafka_t *rk) {
 
         rd_atomic64_init(&rk->rk_eos.txn_dr_fails, 0);
 }
+
+/* A completed EndTxn response must not lend its source to an earlier local
+ * abortable error selected by the existing state branch. */
+int unittest_failure_rows_endtxn(void) {
+        rd_kafka_conf_t *conf = rd_kafka_conf_new();
+        rd_kafka_t *rk;
+        rd_kafka_broker_t *rkb;
+        rd_kafka_buf_t *frame;
+        rd_kafka_error_t *error;
+        rd_kafka_conf_set(conf, "transactional.id", "reply-unit", NULL, 0);
+        rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, NULL, 0);
+        rkb = rd_kafka_broker_add_logical(rk, "reply-unit");
+        rd_kafka_wrlock(rk);
+        rk->rk_eos.txn_state = RD_KAFKA_TXN_STATE_COMMITTING_TRANSACTION;
+        rd_kafka_wrunlock(rk);
+        rd_kafka_txn_set_abortable_error(rk, RD_KAFKA_RESP_ERR__TIMED_OUT,
+                                         "earlier local transaction timeout");
+        error = rd_kafka_txn_curr_api_begin(rk, "commit_transaction", rd_false, 1000, NULL);
+        RD_UT_ASSERT(!error, "admit current API result owner");
+        frame = rd_kafka_buf_new(1, 16);
+        rd_kafka_broker_keep(rkb);
+        frame->rkbuf_rkb = rkb;
+        frame->rkbuf_reqhdr.ApiKey = RD_KAFKAP_EndTxn;
+        frame->rkbuf_u.EndTxn.commit = rd_true;
+        rd_kafka_buf_write_i32(frame, 0);
+        rd_kafka_buf_write_i16(frame, RD_KAFKA_RESP_ERR_TRANSACTIONAL_ID_AUTHORIZATION_FAILED);
+        rd_slice_init_full(&frame->rkbuf_reader, &frame->rkbuf_buf);
+        rd_kafka_txn_handle_EndTxn(rk, rkb, 0, frame, frame, NULL);
+        RD_UT_ASSERT(frame->rkbuf_broker_reply && frame->rkbuf_broker_reply->code == 53,
+                     "later response was actually decoded");
+        mtx_lock(&rk->rk_eos.txn_curr_api.lock);
+        error = rd_kafka_error_copy(rk->rk_eos.txn_curr_api.error);
+        rk->rk_eos.txn_curr_api.calling = rd_false;
+        *rk->rk_eos.txn_curr_api.name = '\0';
+        mtx_unlock(&rk->rk_eos.txn_curr_api.lock);
+        rd_kafka_buf_destroy(frame);
+        rd_kafka_broker_destroy(rkb);
+        rd_kafka_destroy(rk);
+        RD_UT_ASSERT(rd_kafka_error_code(error) == RD_KAFKA_RESP_ERR__TIMED_OUT &&
+                     rd_kafka_error_txn_requires_abort(error) &&
+                     !rd_kafka_error_broker_reply(error),
+                     "the API retained the selected earlier local error without a peer source");
+        rd_kafka_error_destroy(error);
+        RD_UT_PASS();
+}

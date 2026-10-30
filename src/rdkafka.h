@@ -889,11 +889,6 @@ int rd_kafka_error_is_retriable(const rd_kafka_error_t *error);
 RD_EXPORT
 int rd_kafka_error_txn_requires_abort(const rd_kafka_error_t *error);
 
-/**
- * @brief Free and destroy an error object.
- *
- * @remark As a conveniance it is permitted to pass a NULL \p error.
- */
 /** Immutable facts decoded from the response belonging to this result.
  * All pointers are borrowed until the result owner is destroyed. NULL/0
  * explanation means no non-empty explanation was received. Native diagnostic
@@ -920,6 +915,11 @@ typedef struct rd_kafka_broker_reply_s {
 RD_EXPORT const rd_kafka_broker_reply_t *
 rd_kafka_error_broker_reply(const rd_kafka_error_t *error);
 
+/**
+ * @brief Free and destroy an error object.
+ *
+ * @remark As a conveniance it is permitted to pass a NULL \p error.
+ */
 RD_EXPORT
 void rd_kafka_error_destroy(rd_kafka_error_t *error);
 
@@ -10733,6 +10733,8 @@ RD_EXPORT void rd_kafka_conf_set_runtime_sasl_cb(rd_kafka_conf_t *conf,
     rd_kafka_runtime_sasl_cb_t callback);
 
 
+/* Borrowed immutable projections: valid until the named owner is destroyed.
+ * NULL means no decoded reply belongs to this result, including local errors. */
 RD_EXPORT const rd_kafka_broker_reply_t *
 rd_kafka_event_broker_reply(const rd_kafka_event_t *event);
 RD_EXPORT const rd_kafka_broker_reply_t *
@@ -10745,12 +10747,25 @@ RD_EXPORT const rd_kafka_broker_reply_t *
 rd_kafka_ConfigResource_broker_reply(const rd_kafka_ConfigResource_t *resource);
 
 
+/* Rich synchronous APIs share the original dispatch, retries and timeout.
+ * Each function sets *errorp to NULL initially; a failed completion returns an owned complex
+ * error (destroy with rd_kafka_error_destroy), with only its selected reply.
+ * Metadata keeps its original ownership convention. The two partition-list
+ * queries transfer actual completed entries even on overall error; unanswered
+ * offsets are invalid rather than echoed input timestamps/offsets.
+ * The legacy API names keep their original success-only transfer conventions. */
 RD_EXPORT rd_kafka_resp_err_t rd_kafka_metadata_with_error(
     rd_kafka_t *, int, rd_kafka_topic_t *, const rd_kafka_metadata_t **, int,
     rd_kafka_error_t **);
 RD_EXPORT const rd_kafka_broker_reply_t *rd_kafka_metadata_broker_reply(
     const rd_kafka_metadata_t *, const char *, int32_t);
 
+/* list_groups_with_error always returns its owned completed group list, if
+ * created, independently of overall status. Destroy it with group_list_destroy.
+ * Each callback-observed failed subrequest is retained separately in this
+ * call's owned error array; a later success does not erase it. Destroy the
+ * array and its errors with group_list_broker_errors_destroy. api_version -1
+ * means request construction failed before version selection. */
 typedef struct rd_kafka_group_list_broker_error_s {
         int32_t broker_id;
         const char *peer;
@@ -10771,6 +10786,7 @@ RD_EXPORT rd_kafka_resp_err_t rd_kafka_offsets_for_times_with_error(
     rd_kafka_t *, rd_kafka_topic_partition_list_t *, int, rd_kafka_error_t **);
 RD_EXPORT rd_kafka_resp_err_t rd_kafka_query_watermark_offsets_with_error(
     rd_kafka_t *, const char *, int32_t, int64_t *, int64_t *, int, rd_kafka_error_t **);
+/* Owned copy of the first native fatal code/flags/reply, or NULL. */
 RD_EXPORT rd_kafka_error_t *rd_kafka_fatal_error_copy(rd_kafka_t *);
 #ifdef __cplusplus
 }
