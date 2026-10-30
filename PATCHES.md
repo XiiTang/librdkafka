@@ -158,3 +158,14 @@ the review correction validation.
 The existing group callback unit now identifies errors by distinct decoded broker
 ids rather than collection position. Both callback schedules, two refusals,
 overall native status and complete-group-prefix assertions remain.
+
+
+Review-correction validation on macOS arm64: the native build and both
+`RD_UT_TEST=failure_rows` units pass (including keyed broker lookup and both
+callback schedules). At the same native source, Rust 1.97.0's existing
+`types::tests::test_display_error` passes for EOF and both full-i32 extremes
+through name and Display with native CFLAGS `-fsanitize=undefined
+-fno-sanitize-recover=undefined` and `UBSAN_OPTIONS=halt_on_error=1`. The Rust
+harness explicitly links the Apple Clang UBSan runtime; an initial link without
+that runtime failed before running the test. No sanitizer report occurs in the
+passing run. This remains a focused correction check, not a full native lane.
