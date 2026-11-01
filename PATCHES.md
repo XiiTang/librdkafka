@@ -373,3 +373,10 @@ without its end mark (accepted). Boundless's
 drives crafted batches through the Fetch reader. With this patch and #440's
 correction, 0000 (every unit), 0138, 0105 and 0143 pass with the classic and
 consumer group protocols.
+
+Full local suite (`-l`) at `fedec461` on macOS arm64: with the classic group
+protocol every test passes except 0146's `broker_population_max`, which failed
+once at load average 17-20 and passed alone; with the consumer protocol every
+test passes except 0104, which times out in the same way at the prior pin
+`753d47e3` (a GroupCoordinator connect timing out), so it is not caused by
+#440 or #442.
