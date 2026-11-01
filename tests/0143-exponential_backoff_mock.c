@@ -44,6 +44,13 @@ const int32_t retry_max_ms = 1000;
  * The exponential backoff does not apply in this case we just apply the jitter
  * to the backoff of intervalled query The retry count is non - deterministic as
  * fresh request spawned on its own.
+ *
+ * The errors are installed before the consumer exists, since coordinator
+ * discovery starts at creation: a query answered before them leaves the next
+ * one 600 s away. The first FindCoordinator goes with the bootstrap broker's
+ * Metadata; its reply retires the bootstrap broker, which resets the query
+ * interval by design, so the gap after it measures that retirement, not the
+ * backoff, and is skipped.
  */
 static void test_find_coordinator(rd_kafka_mock_cluster_t *mcluster,
                                   const char *topic,
@@ -52,6 +59,7 @@ static void test_find_coordinator(rd_kafka_mock_cluster_t *mcluster,
         size_t request_cnt                 = 0;
         int64_t previous_request_ts        = -1;
         int32_t retry_count                = 0;
+        int32_t find_coordinator_cnt       = 0;
         int32_t num_retries                = 4;
         const int32_t low                  = 1000;
         int32_t buffer                     = 200;  // 200 ms buffer added
@@ -63,21 +71,26 @@ static void test_find_coordinator(rd_kafka_mock_cluster_t *mcluster,
         test_conf_set(conf, "auto.offset.reset", "earliest");
         test_conf_set(conf, "enable.auto.commit", "false");
 
-        consumer = test_create_consumer(topic, NULL, conf, NULL);
-
         rd_kafka_mock_push_request_errors(
             mcluster, RD_KAFKAP_FindCoordinator, num_retries,
             RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE,
             RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE,
             RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE,
             RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE);
+
+        consumer = test_create_consumer(topic, NULL, conf, NULL);
+
         /* This will trigger a find_coordinator request */
         rkm = rd_kafka_consumer_poll(consumer, 10 * 1000);
         if (rkm)
                 rd_kafka_message_destroy(rkm);
         rd_sleep(4);
         requests = rd_kafka_mock_get_requests(mcluster, &request_cnt);
-        for (i = 0; (i < request_cnt) && (retry_count < num_retries); i++) {
+        /* Only the num_retries - 1 gaps after the first that follow an
+         * error reply are retries: the query after the last error is
+         * answered, and a later one is not a retry. */
+        for (i = 0; (i < request_cnt) && (retry_count < num_retries - 1);
+             i++) {
                 TEST_SAY("Broker Id : %d API Key : %d Timestamp : %" PRId64
                          "\n",
                          rd_kafka_mock_request_id(requests[i]),
@@ -88,7 +101,9 @@ static void test_find_coordinator(rd_kafka_mock_cluster_t *mcluster,
                     RD_KAFKAP_FindCoordinator)
                         continue;
 
-                if (previous_request_ts != -1) {
+                find_coordinator_cnt++;
+                /* Skip the bootstrap-retirement gap after the first. */
+                if (find_coordinator_cnt > 2) {
                         int64_t time_difference =
                             (rd_kafka_mock_request_timestamp(requests[i]) -
                              previous_request_ts) /
@@ -104,6 +119,10 @@ static void test_find_coordinator(rd_kafka_mock_cluster_t *mcluster,
                 previous_request_ts =
                     rd_kafka_mock_request_timestamp(requests[i]);
         }
+        TEST_ASSERT(retry_count >= num_retries - 1,
+                    "Expected at least %d measured FindCoordinator retry "
+                    "intervals, got %d",
+                    num_retries - 1, retry_count);
         rd_kafka_destroy(consumer);
         rd_kafka_mock_request_destroy_array(requests, request_cnt);
         rd_kafka_mock_clear_requests(mcluster);

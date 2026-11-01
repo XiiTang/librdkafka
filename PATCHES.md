@@ -55,7 +55,26 @@ stays committed. 0117's REQUEST_TIMED_OUT test and 0143's offset_commit test
 now assert one OffsetCommit and the commit error (before: 2 requests and
 success). All local tests pass on macOS arm64 with the classic and consumer
 group protocols; 0143's FindCoordinator timing failed twice under the consumer
-protocol on a loaded host and passed three reruns.
+protocol on a loaded host and passed three reruns, a fixture defect that
+Boundless #309 below corrects.
+
+## Boundless #309: 0143 FindCoordinator fixture
+
+Test only; native behavior is unchanged. 0143's `test_find_coordinator` created
+the consumer before installing the four FindCoordinator errors. Coordinator
+discovery starts at creation on the native thread, so a query answered first
+leaves the next one 600 s away and the errors are never consumed. It also
+measured the gap after the first FindCoordinator, whose reply retires the
+bootstrap broker and resets the query interval by design
+(`rdkafka_cgrp.c` `_DESTROY_BROKER`), and asserted no minimum number of gaps.
+The subtest now installs the errors before creating the consumer, skips the
+gap after the first FindCoordinator, measures only the `num_retries - 1` gaps
+that follow an error reply (the query after the last error is answered, and a
+later one is not a retry) with the existing bounds, and asserts that all of
+them were measured. On macOS arm64 (CMake Debug, static, no SSL/SASL), full
+0143 at `d8fbe0cf` passed with the classic (load 21.8) and consumer (load 7.9)
+group protocols, the race not reproducing; with this change both passed
+(loads 58.7 and 85.1).
 
 ## W17d: configured populations and linear aborted transaction storage
 
