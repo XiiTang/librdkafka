@@ -378,5 +378,11 @@ Full local suite (`-l`) at `fedec461` on macOS arm64: with the classic group
 protocol every test passes except 0146's `broker_population_max`, which failed
 once at load average 17-20 and passed alone; with the consumer protocol every
 test passes except 0104, which times out in the same way at the prior pin
-`753d47e3` (a GroupCoordinator connect timing out), so it is not caused by
-#440 or #442.
+`753d47e3` and at upstream `e1db7eaa`. Its follower-down subtest takes down
+the mock broker that coordinates the test's group, and closing the consumer
+then waits for the deferred offset commit until `session.timeout.ms` has
+passed (`rdkafka_cgrp.c`); the consumer protocol keeps the library's 45 s
+default, which exceeds 0104's 50 s limit. Upstream's CI runs this suite with
+`CI=true`, which raises the time-limit multiplier; with it, 0104 passes at
+`e1db7eaa` and at `fedec461`. Full local suites under the consumer protocol
+set `CI=true` as upstream does.
