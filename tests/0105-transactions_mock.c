@@ -279,9 +279,11 @@ static void do_test_txn_recoverable_errors(void) {
             mcluster, RD_KAFKAP_AddPartitionsToTxn, 1,
             RD_KAFKA_RESP_ERR_UNKNOWN_TOPIC_OR_PART);
 
+        /* Boundless #308: only refusals before acting are retried
+         * internally. */
         rd_kafka_mock_push_request_errors(
             mcluster, RD_KAFKAP_TxnOffsetCommit, 2,
-            RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
+            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
             RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
 
         cgmetadata = rd_kafka_consumer_group_metadata_new("mygroupid");
@@ -296,10 +298,9 @@ static void do_test_txn_recoverable_errors(void) {
          * Commit transaction, first with som failures, then succeed.
          */
         rd_kafka_mock_push_request_errors(
-            mcluster, RD_KAFKAP_EndTxn, 3,
-            RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-            RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS);
+            mcluster, RD_KAFKAP_EndTxn, 2,
+            RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+            RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
 
         TEST_CALL_ERROR__(rd_kafka_commit_transaction(rk, 5000));
 
@@ -610,28 +611,34 @@ static void do_test_txn_endtxn_errors(void) {
         } scenario[] = {
             /* This list of errors is from the EndTxnResponse handler in
              * AK clients/.../TransactionManager.java */
+            /* Boundless #308: an EndTxn the coordinator may have processed
+             * is not sent again; the application's repeat succeeds. */
             {
                 /* #0 */
-                2,
-                {RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-                 RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE},
-                /* Should auto-recover */
-                RD_KAFKA_RESP_ERR_NO_ERROR,
+                1,
+                {RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE},
+                RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
+                rd_true /* retriable */,
+                rd_false /* !abortable */,
+                rd_false /* !fatal */,
             },
             {
                 /* #1 */
-                2,
-                {RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                 RD_KAFKA_RESP_ERR_NOT_COORDINATOR},
-                /* Should auto-recover */
-                RD_KAFKA_RESP_ERR_NO_ERROR,
+                1,
+                {RD_KAFKA_RESP_ERR_NOT_COORDINATOR},
+                RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
+                rd_true /* retriable */,
+                rd_false /* !abortable */,
+                rd_false /* !fatal */,
             },
             {
-                /* #2 */
+                /* #2: can follow a successful transaction-log append */
                 1,
                 {RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS},
-                /* Should auto-recover */
-                RD_KAFKA_RESP_ERR_NO_ERROR,
+                RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+                rd_true /* retriable */,
+                rd_false /* !abortable */,
+                rd_false /* !fatal */,
             },
             {
                 /* #3 */
@@ -950,18 +957,20 @@ static void do_test_txn_endtxn_infinite(void) {
                  * Commit/abort transaction, first with som retriable failures,
                  * then success.
                  */
+                /* Boundless #308: only refusals before acting are
+                 * retried internally. */
                 rd_kafka_mock_push_request_errors(
                     mcluster, RD_KAFKAP_EndTxn, 10,
-                    RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR);
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
 
                 rd_sleep(1);
 
@@ -1023,18 +1032,20 @@ static void do_test_txn_endtxn_timeout(void) {
                  * Commit/abort transaction, first with some retriable failures
                  * whos retries exceed the user timeout.
                  */
+                /* Boundless #308: only refusals before acting are
+                 * retried internally. */
                 rd_kafka_mock_push_request_errors(
                     mcluster, RD_KAFKAP_EndTxn, 10,
-                    RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
-                    RD_KAFKA_RESP_ERR_NOT_COORDINATOR);
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
 
                 rd_sleep(1);
 
@@ -1111,10 +1122,10 @@ static void do_test_txn_endtxn_timeout_inflight(void) {
                     rk, RD_KAFKA_V_TOPIC("mytopic"), RD_KAFKA_V_VALUE("hi", 2),
                     RD_KAFKA_V_END));
 
-                /* Let EndTxn & EndTxn retry timeout */
+                /* Let EndTxn time out. Boundless #308: the transmitted
+                 * EndTxn is not sent again. */
                 rd_kafka_mock_broker_push_request_error_rtts(
-                    mcluster, coord_id, RD_KAFKAP_EndTxn, 2,
-                    RD_KAFKA_RESP_ERR_NO_ERROR, 10000,
+                    mcluster, coord_id, RD_KAFKAP_EndTxn, 1,
                     RD_KAFKA_RESP_ERR_NO_ERROR, 10000);
 
                 rd_sleep(1);
@@ -1137,8 +1148,22 @@ static void do_test_txn_endtxn_timeout_inflight(void) {
                             commit_str);
                 rd_kafka_error_destroy(error);
 
-                /* Now call it again with an infinite timeout, should work. */
+                /* Resuming waits for the in-flight EndTxn, which times out
+                 * and is not sent again: a retriable error. */
                 TIMING_START(&t_call, "%s_transaction() nr 2", commit_str);
+                if (commit)
+                        error = rd_kafka_commit_transaction(rk, -1);
+                else
+                        error = rd_kafka_abort_transaction(rk, -1);
+                TIMING_STOP(&t_call);
+                TEST_SAY_ERROR(error, "%s nr 2 returned: ", commit_str);
+                TEST_ASSERT(error != NULL && rd_kafka_error_is_retriable(error),
+                            "Expected %s nr 2 to fail with a retriable error",
+                            commit_str);
+                rd_kafka_error_destroy(error);
+
+                /* The application's repeat sends a new EndTxn. */
+                TIMING_START(&t_call, "%s_transaction() nr 3", commit_str);
                 if (commit)
                         TEST_CALL_ERROR__(rd_kafka_commit_transaction(rk, -1));
                 else
@@ -1190,15 +1215,17 @@ static void do_test_txn_req_cnt(void) {
         rd_kafka_topic_partition_list_add(offsets, "srctopic64", 40)->offset =
             999999111;
 
-        rd_kafka_mock_push_request_errors(mcluster, RD_KAFKAP_AddOffsetsToTxn,
-                                          2,
-                                          RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT,
-                                          RD_KAFKA_RESP_ERR_NOT_COORDINATOR);
+        /* Boundless #308: only refusals before acting are retried
+         * internally. */
+        rd_kafka_mock_push_request_errors(
+            mcluster, RD_KAFKAP_AddOffsetsToTxn, 2,
+            RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS,
+            RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
 
         rd_kafka_mock_push_request_errors(
             mcluster, RD_KAFKAP_TxnOffsetCommit, 2,
             RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
-            RD_KAFKA_RESP_ERR_UNKNOWN_TOPIC_OR_PART);
+            RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
 
         cgmetadata = rd_kafka_consumer_group_metadata_new("mygroupid");
 
@@ -1450,6 +1477,36 @@ static void set_next_coord(rd_kafka_mock_cluster_t *mcluster,
 }
 
 /**
+ * @brief Boundless #308: call commit_transaction() or abort_transaction()
+ *        again, as the application does, while it fails with a retriable
+ *        coordinator error: an EndTxn answered by a coordinator that moved
+ *        is not sent again by librdkafka.
+ */
+static void txn_end_repeating(rd_kafka_t *rk, rd_bool_t commit) {
+        int attempts;
+        for (attempts = 0; attempts < 5; attempts++) {
+                rd_kafka_error_t *error =
+                    commit ? rd_kafka_commit_transaction(rk, -1)
+                           : rd_kafka_abort_transaction(rk, -1);
+                if (!error)
+                        return;
+                TEST_SAY_ERROR(error, "%s returned: ",
+                               commit ? "commit" : "abort");
+                TEST_ASSERT(rd_kafka_error_is_retriable(error) &&
+                                (rd_kafka_error_code(error) ==
+                                     RD_KAFKA_RESP_ERR_NOT_COORDINATOR ||
+                                 rd_kafka_error_code(error) ==
+                                     RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE),
+                            "Expected a retriable coordinator error, not %s",
+                            rd_kafka_error_string(error));
+                rd_kafka_error_destroy(error);
+        }
+        TEST_FAIL("%s did not succeed in %d attempts",
+                  commit ? "commit" : "abort", attempts);
+}
+
+
+/**
  * @brief Switch coordinator during a transaction.
  *
  */
@@ -1505,11 +1562,11 @@ static void do_test_txn_switch_coordinator(void) {
 
                 if (!(i % 5)) {
                         test_curr->ignore_dr_err = rd_false;
-                        TEST_CALL_ERROR__(rd_kafka_commit_transaction(rk, -1));
+                        txn_end_repeating(rk, rd_true /*commit*/);
 
                 } else {
                         test_curr->ignore_dr_err = rd_true;
-                        TEST_CALL_ERROR__(rd_kafka_abort_transaction(rk, -1));
+                        txn_end_repeating(rk, rd_false /*abort*/);
                 }
         }
 
@@ -1531,6 +1588,8 @@ static void do_test_txn_switch_coordinator_refresh(void) {
         const char *transactional_id = "txnid";
         rd_kafka_topic_partition_list_t *offsets;
         rd_kafka_consumer_group_metadata_t *cgmetadata;
+        rd_kafka_error_t *error;
+        int attempts;
 
         SUB_TEST("Test switching coordinators (refresh)");
 
@@ -1561,8 +1620,28 @@ static void do_test_txn_switch_coordinator_refresh(void) {
 
         cgmetadata = rd_kafka_consumer_group_metadata_new("mygroupid");
 
-        TEST_CALL_ERROR__(rd_kafka_send_offsets_to_transaction(
-            rk, offsets, cgmetadata, 20 * 1000));
+        /* Boundless #308: the NOT_COORDINATOR answer is not sent again by
+         * librdkafka; the coordinator is refreshed and the application's
+         * repeat succeeds. */
+        error = rd_kafka_send_offsets_to_transaction(rk, offsets, cgmetadata,
+                                                     20 * 1000);
+        TEST_ASSERT(error != NULL && rd_kafka_error_is_retriable(error) &&
+                        rd_kafka_error_code(error) ==
+                            RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
+                    "Expected a retriable NOT_COORDINATOR, not %s",
+                    error ? rd_kafka_error_string(error) : "success");
+        rd_kafka_error_destroy(error);
+        /* Repeat while the coordinator refresh is still under way. */
+        for (attempts = 0;
+             (error = rd_kafka_send_offsets_to_transaction(
+                  rk, offsets, cgmetadata, 20 * 1000)) != NULL;
+             attempts++) {
+                TEST_ASSERT(attempts < 5 && rd_kafka_error_is_retriable(error),
+                            "Expected the repeat to succeed, not %s",
+                            rd_kafka_error_string(error));
+                rd_kafka_error_destroy(error);
+                rd_usleep(100 * 1000, NULL);
+        }
 
         rd_kafka_consumer_group_metadata_destroy(cgmetadata);
         rd_kafka_topic_partition_list_destroy(offsets);
@@ -3783,15 +3862,17 @@ do_test_txn_offset_commit_doesnt_retry_too_quickly(rd_bool_t times_out) {
         test_flush(rk, 5000);
 
         /*
-         * Fail TxnOffsetCommit with COORDINATOR_NOT_AVAILABLE
-         * repeatedly.
+         * Fail TxnOffsetCommit with COORDINATOR_LOAD_IN_PROGRESS
+         * repeatedly. Boundless #308: a refusal before acting is the
+         * failure librdkafka still retries; COORDINATOR_NOT_AVAILABLE is
+         * returned to the application.
          */
         rd_kafka_mock_push_request_errors(
             mcluster, RD_KAFKAP_TxnOffsetCommit, 4,
-            RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-            RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-            RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
-            RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE);
+            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+            RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS);
 
         offsets = rd_kafka_topic_partition_list_new(1);
         rd_kafka_topic_partition_list_add(offsets, "srctopic4", 3)->offset = 1;
@@ -3808,10 +3889,10 @@ do_test_txn_offset_commit_doesnt_retry_too_quickly(rd_bool_t times_out) {
 
         if (times_out) {
                 TEST_ASSERT(rd_kafka_error_code(error) ==
-                                RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
+                                RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
                             "expected %s, got: %s",
                             rd_kafka_err2name(
-                                RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE),
+                                RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS),
                             rd_kafka_err2str(rd_kafka_error_code(error)));
         } else {
                 TEST_ASSERT(rd_kafka_error_code(error) ==
@@ -3887,6 +3968,253 @@ static void do_test_txn_send_offsets_timeout_coord_down(void) {
         /* Bring coordinator back up for clean shutdown */
         rd_kafka_mock_broker_set_up(mcluster, 2);
 
+        rd_kafka_destroy(rk);
+
+        SUB_TEST_PASS();
+}
+
+
+/**
+ * @name Boundless #308: a transactional request the coordinator may have
+ *       processed is not sent again by librdkafka.
+ */
+typedef enum {
+        TXN_RESEND_ADD_OFFSETS,
+        TXN_RESEND_OFFSET_COMMIT,
+        TXN_RESEND_COMMIT,
+        TXN_RESEND_ABORT
+} txn_resend_call_t;
+
+typedef enum {
+        TXN_RESEND_NO_ANSWER,
+        TXN_RESEND_NOT_COORDINATOR,
+        TXN_RESEND_CONCURRENT,
+        TXN_RESEND_LOADING
+} txn_resend_case_t;
+
+static rd_bool_t txn_resend_is_api_key(rd_kafka_mock_request_t *request,
+                                       void *opaque) {
+        return rd_kafka_mock_request_api_key(request) == *(int16_t *)opaque;
+}
+
+static rd_kafka_error_t *txn_resend_call(rd_kafka_t *rk,
+                                         txn_resend_call_t call,
+                                         const char *groupid) {
+        rd_kafka_topic_partition_list_t *offsets;
+        rd_kafka_consumer_group_metadata_t *cgmetadata;
+        rd_kafka_error_t *error;
+
+        switch (call) {
+        case TXN_RESEND_COMMIT:
+                return rd_kafka_commit_transaction(rk, -1);
+        case TXN_RESEND_ABORT:
+                return rd_kafka_abort_transaction(rk, -1);
+        default:
+                offsets = rd_kafka_topic_partition_list_new(1);
+                rd_kafka_topic_partition_list_add(offsets, "srctopic4", 0)
+                    ->offset   = 12;
+                cgmetadata = rd_kafka_consumer_group_metadata_new(groupid);
+                error      = rd_kafka_send_offsets_to_transaction(
+                    rk, offsets, cgmetadata, -1);
+                rd_kafka_consumer_group_metadata_destroy(cgmetadata);
+                rd_kafka_topic_partition_list_destroy(offsets);
+                return error;
+        }
+}
+
+/**
+ * @brief A transmitted attempt that fails without proof that the
+ *        coordinator did not act is returned as a retriable error after
+ *        one request, and the application's explicit repeat sends exactly
+ *        one more. A refusal before acting is still retried internally:
+ *        CONCURRENT_TRANSACTIONS for every request, and
+ *        COORDINATOR_LOAD_IN_PROGRESS only for TxnOffsetCommit.
+ */
+static void do_test_txn_resent_only_if_unprocessed(txn_resend_call_t call,
+                                                   txn_resend_case_t which) {
+        static const char *call_names[] = {"AddOffsetsToTxn",
+                                           "TxnOffsetCommit", "EndTxn(commit)",
+                                           "EndTxn(abort)"};
+        static const char *case_names[] = {
+            "no answer", "NOT_COORDINATOR", "CONCURRENT_TRANSACTIONS",
+            "COORDINATOR_LOAD_IN_PROGRESS"};
+        rd_kafka_t *rk;
+        rd_kafka_mock_cluster_t *mcluster;
+        const char *txnid   = "myTxnId";
+        const char *groupid = "myGroupId";
+        int16_t api_key;
+        int32_t coord_id;
+        rd_kafka_error_t *error;
+        size_t cnt;
+        rd_bool_t returned;
+
+        SUB_TEST_QUICK("%s, %s", call_names[call], case_names[which]);
+
+        switch (call) {
+        case TXN_RESEND_ADD_OFFSETS:
+                api_key  = RD_KAFKAP_AddOffsetsToTxn;
+                coord_id = 1;
+                break;
+        case TXN_RESEND_OFFSET_COMMIT:
+                api_key  = RD_KAFKAP_TxnOffsetCommit;
+                coord_id = 2;
+                break;
+        default:
+                api_key  = RD_KAFKAP_EndTxn;
+                coord_id = 1;
+                break;
+        }
+
+        /* Whether the attempt is returned to the application. */
+        returned = which == TXN_RESEND_NO_ANSWER ||
+                   which == TXN_RESEND_NOT_COORDINATOR ||
+                   (which == TXN_RESEND_LOADING &&
+                    call != TXN_RESEND_OFFSET_COMMIT);
+
+        test_curr->is_fatal_cb = error_is_fatal_cb;
+        allowed_error          = RD_KAFKA_RESP_ERR__TIMED_OUT;
+        allowed_error_2        = RD_KAFKA_RESP_ERR__TRANSPORT;
+
+        rk = create_txn_producer(&mcluster, txnid, 3, "socket.timeout.ms",
+                                 "2000", NULL);
+
+        rd_kafka_mock_coordinator_set(mcluster, "transaction", txnid, 1);
+        rd_kafka_mock_coordinator_set(mcluster, "group", groupid, 2);
+
+        TEST_CALL_ERROR__(rd_kafka_init_transactions(rk, 5000));
+        TEST_CALL_ERROR__(rd_kafka_begin_transaction(rk));
+
+        if (call == TXN_RESEND_COMMIT || call == TXN_RESEND_ABORT) {
+                TEST_CALL_ERR__(rd_kafka_producev(
+                    rk, RD_KAFKA_V_TOPIC("mytopic"), RD_KAFKA_V_PARTITION(0),
+                    RD_KAFKA_V_VALUE("hi", 2), RD_KAFKA_V_END));
+                TEST_CALL_ERR__(rd_kafka_flush(rk, -1));
+        } else if (call == TXN_RESEND_OFFSET_COMMIT) {
+                /* Register the offsets partition first, so that only
+                 * TxnOffsetCommit meets the injected failure. */
+                TEST_CALL_ERROR__(txn_resend_call(rk, call, groupid));
+        }
+
+        rd_kafka_mock_start_request_tracking(mcluster);
+
+        switch (which) {
+        case TXN_RESEND_NO_ANSWER:
+                /* Received and answered after the request timed out. */
+                rd_kafka_mock_broker_push_request_error_rtts(
+                    mcluster, coord_id, api_key, 1, RD_KAFKA_RESP_ERR_NO_ERROR,
+                    5000);
+                break;
+        case TXN_RESEND_NOT_COORDINATOR:
+                rd_kafka_mock_push_request_errors(
+                    mcluster, api_key, 1, RD_KAFKA_RESP_ERR_NOT_COORDINATOR);
+                break;
+        case TXN_RESEND_CONCURRENT:
+                rd_kafka_mock_push_request_errors(
+                    mcluster, api_key, 1,
+                    RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS);
+                break;
+        case TXN_RESEND_LOADING:
+                rd_kafka_mock_push_request_errors(
+                    mcluster, api_key, 1,
+                    RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS);
+                break;
+        }
+
+        error = txn_resend_call(rk, call, groupid);
+        cnt   = test_mock_get_matching_request_cnt(
+            mcluster, txn_resend_is_api_key, &api_key);
+
+        if (returned) {
+                TEST_ASSERT(error != NULL, "Expected %s to fail",
+                            call_names[call]);
+                TEST_SAY_ERROR(error, "%s returned: ", call_names[call]);
+                TEST_ASSERT(rd_kafka_error_is_retriable(error),
+                            "Expected a retriable error, not %s",
+                            rd_kafka_error_string(error));
+                TEST_ASSERT(!rd_kafka_error_txn_requires_abort(error) &&
+                                !rd_kafka_error_is_fatal(error),
+                            "Expected the transaction to stay usable: %s",
+                            rd_kafka_error_string(error));
+                TEST_ASSERT(cnt == 1,
+                            "Expected the broker to receive 1 %s, not %" PRIusz,
+                            call_names[call], cnt);
+                rd_kafka_error_destroy(error);
+
+                /* The application's explicit repeat sends one more. */
+                rd_kafka_mock_clear_requests(mcluster);
+                TEST_CALL_ERROR__(txn_resend_call(rk, call, groupid));
+                cnt = test_mock_get_matching_request_cnt(
+                    mcluster, txn_resend_is_api_key, &api_key);
+                TEST_ASSERT(cnt == 1,
+                            "Expected the repeat to send 1 %s, not %" PRIusz,
+                            call_names[call], cnt);
+        } else {
+                TEST_ASSERT(!error, "Expected %s to succeed, not %s",
+                            call_names[call],
+                            error ? rd_kafka_error_string(error) : "");
+                TEST_ASSERT(cnt == 2,
+                            "Expected the broker to receive 2 %s, not %" PRIusz,
+                            call_names[call], cnt);
+        }
+
+        rd_kafka_mock_stop_request_tracking(mcluster);
+        rd_kafka_destroy(rk);
+
+        allowed_error          = RD_KAFKA_RESP_ERR_NO_ERROR;
+        allowed_error_2        = RD_KAFKA_RESP_ERR_NO_ERROR;
+        test_curr->is_fatal_cb = NULL;
+
+        SUB_TEST_PASS();
+}
+
+
+/**
+ * @brief Boundless #308: an AddOffsetsToTxn the coordinator may have
+ *        appended keeps its participation when it is not sent again, so
+ *        abort_transaction() of an offsets-only transaction still sends
+ *        EndTxn instead of completing locally.
+ */
+static void do_test_txn_abort_after_ambiguous_add_offsets(void) {
+        rd_kafka_t *rk;
+        rd_kafka_mock_cluster_t *mcluster;
+        const char *txnid   = "myTxnId";
+        const char *groupid = "myGroupId";
+        int16_t api_key     = RD_KAFKAP_EndTxn;
+        rd_kafka_error_t *error;
+        size_t cnt;
+
+        SUB_TEST_QUICK();
+
+        rk = create_txn_producer(&mcluster, txnid, 3, NULL);
+
+        rd_kafka_mock_coordinator_set(mcluster, "transaction", txnid, 1);
+        rd_kafka_mock_coordinator_set(mcluster, "group", groupid, 2);
+
+        TEST_CALL_ERROR__(rd_kafka_init_transactions(rk, 5000));
+        TEST_CALL_ERROR__(rd_kafka_begin_transaction(rk));
+
+        rd_kafka_mock_start_request_tracking(mcluster);
+
+        rd_kafka_mock_push_request_errors(mcluster, RD_KAFKAP_AddOffsetsToTxn,
+                                          1, RD_KAFKA_RESP_ERR_NOT_COORDINATOR);
+
+        error = txn_resend_call(rk, TXN_RESEND_ADD_OFFSETS, groupid);
+        TEST_ASSERT(error != NULL && rd_kafka_error_is_retriable(error) &&
+                        rd_kafka_error_code(error) ==
+                            RD_KAFKA_RESP_ERR_NOT_COORDINATOR,
+                    "Expected a retriable NOT_COORDINATOR, not %s",
+                    error ? rd_kafka_error_string(error) : "success");
+        rd_kafka_error_destroy(error);
+
+        /* No produce and no explicit repeat: the abort must still reach
+         * the coordinator. */
+        TEST_CALL_ERROR__(rd_kafka_abort_transaction(rk, -1));
+        cnt = test_mock_get_matching_request_cnt(
+            mcluster, txn_resend_is_api_key, &api_key);
+        TEST_ASSERT(cnt == 1, "Expected abort to send 1 EndTxn, not %" PRIusz,
+                    cnt);
+
+        rd_kafka_mock_stop_request_tracking(mcluster);
         rd_kafka_destroy(rk);
 
         SUB_TEST_PASS();
@@ -3992,6 +4320,19 @@ int main_0105_transactions_mock(int argc, char **argv) {
         do_test_txn_offset_commit_doesnt_retry_too_quickly(rd_true);
 
         do_test_txn_offset_commit_doesnt_retry_too_quickly(rd_false);
+
+        {
+                txn_resend_call_t call;
+                txn_resend_case_t which;
+                for (call = TXN_RESEND_ADD_OFFSETS; call <= TXN_RESEND_ABORT;
+                     call++)
+                        for (which = TXN_RESEND_NO_ANSWER;
+                             which <= TXN_RESEND_LOADING; which++)
+                                do_test_txn_resent_only_if_unprocessed(call,
+                                                                       which);
+        }
+
+        do_test_txn_abort_after_ambiguous_add_offsets();
 
         return 0;
 }

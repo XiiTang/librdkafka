@@ -76,6 +76,96 @@ them were measured. On macOS arm64 (CMake Debug, static, no SSL/SASL), full
 group protocols, the race not reproducing; with this change both passed
 (loads 58.7 and 85.1).
 
+## Boundless #308: transactional requests sent again only if unprocessed
+
+A failed AddOffsetsToTxn, TxnOffsetCommit or EndTxn attempt is sent again only
+when the coordinator cannot have processed it: it was never transmitted, or
+the coordinator refused it before acting. Upstream (`d8fbe0cf`) resends a
+transmitted AddOffsetsToTxn and EndTxn through `rd_kafka_buf_retry()` with
+`RD_KAFKA_REQUEST_MAX_RETRIES` after transport loss, request expiry,
+COORDINATOR_NOT_AVAILABLE, NOT_COORDINATOR, REQUEST_TIMED_OUT,
+COORDINATOR_LOAD_IN_PROGRESS, CONCURRENT_TRANSACTIONS and (AddOffsetsToTxn)
+UNKNOWN_TOPIC_OR_PART, and a TxnOffsetCommit through a fresh coordinator
+request after 500 ms for the same errors; the Java client re-enqueues all
+three on disconnect. A transmitted original can still be waiting in a broker
+request handler when the automatic copy succeeds and the transaction moves
+on; it then acts on later work: a late AddOffsetsToTxn reopens a completed
+transaction as ONGOING, which later times out and fences the epoch, a late
+TxnOffsetCommit replaces a later offset in the same transaction, and a late
+EndTxn (v0-1 carries only ID, epoch and result) commits or aborts the next
+transaction.
+
+`rd_kafka_txn_may_resend()` in `rdkafka_txnmgr.c` is the one check the three
+resend sites call. It allows a resend when `rd_kafka_buf_was_sent()` is false,
+or the answer is CONCURRENT_TRANSACTIONS (a pending transition or PREPARE state
+for AddPartitions and EndTxn, failed transaction verification before the
+TxnOffsetCommit write), or, for TxnOffsetCommit only, COORDINATOR_LOAD_IN_PROGRESS
+(the loading check precedes record generation). The transaction coordinator
+can answer COORDINATOR_LOAD_IN_PROGRESS for AddOffsetsToTxn and EndTxn after a
+successful log append, so it proves nothing there. Unlike W7b, refusals are
+still resent: the transactional API runs one call at a time, so a refused
+attempt, which had no effect, cannot act on later work. Every other failure
+is returned as a retriable error:
+
+- AddOffsetsToTxn keeps the existing retriable result. An attempt the
+  coordinator may have appended (NOT_COORDINATOR, COORDINATOR_NOT_AVAILABLE,
+  REQUEST_TIMED_OUT, COORDINATOR_LOAD_IN_PROGRESS, UNKNOWN_TOPIC_OR_PART)
+  keeps its participation in `txn_req_cnt`, as `_TRANSPORT`/`_TIMED_OUT`
+  already did, so abort_transaction() of an offsets-only transaction still
+  sends EndTxn instead of completing locally while the broker transaction
+  stays ONGOING. The cost upstream already accepts after transport loss:
+  when such an attempt was in fact not appended, that EndTxn finds no ongoing
+  transaction and INVALID_TXN_STATE is fatal.
+- TxnOffsetCommit returns the retriable error without requiring abort; the
+  API-timeout branch is unchanged.
+- EndTxn steps COMMITTING_TRANSACTION back to BEGIN_COMMIT (a new valid
+  transition) and ABORTING_TRANSACTION back to BEGIN_ABORT, as upstream does
+  for a failed abort, so the application's resumed commit_transaction() or
+  abort_transaction() sends a new EndTxn instead of waiting for one no longer
+  in flight.
+
+Builders keep `MAX_RETRIES`: a never-transmitted or refused attempt is retried
+until the API timeout as before. The other group requests keep upstream's
+retries:
+
+- SyncGroup: a repeat in another generation gets ILLEGAL_GENERATION; in STABLE
+  the coordinator returns the current assignment and ignores the repeated one,
+  and a pending write is re-checked by generation. No stale payload overwrites
+  later state.
+- Classic Heartbeat validates member and generation and only reschedules the
+  session timer; it carries no payload to replay.
+- ConsumerGroupHeartbeat keeps upstream's retries: the next ordinary heartbeat
+  can carry the same epoch and subscription, leaving the late-original route;
+  heartbeats carry no sequence to fence it.
+
+Regression, 0105 on macOS arm64 (CMake Debug, static, no SSL/SASL):
+`do_test_txn_resent_only_if_unprocessed` runs each of AddOffsetsToTxn,
+TxnOffsetCommit, EndTxn(commit) and EndTxn(abort) against a transmitted
+request answered only after it timed out, NOT_COORDINATOR,
+CONCURRENT_TRANSACTIONS and COORDINATOR_LOAD_IN_PROGRESS, counting requests
+with mock request tracking. Before (new test against `d8fbe0cf` source): the
+no-answer, NOT_COORDINATOR and (except TxnOffsetCommit) loading cases were
+sent again and succeeded, so the expected failure was missing; the
+CONCURRENT_TRANSACTIONS and TxnOffsetCommit loading cases passed. After: those
+cases fail retriable, not abortable or fatal, after 1 request and the
+application's repeat sends exactly 1 more and succeeds; refusals still take 2
+requests and succeed. `do_test_txn_abort_after_ambiguous_add_offsets`: an
+offsets-only transaction whose AddOffsetsToTxn is answered NOT_COORDINATOR
+fails send_offsets retriable and abort then sends 1 EndTxn (before:
+send_offsets succeeded after the resend). Changed to assert the rule:
+`recoverable_errors`, `endtxn_infinite`, `endtxn_timeout` and `txn_req_cnt`
+now inject refusals for the internal retries they test; `endtxn_errors`
+scenarios #0-#2 expect a retriable COORDINATOR_NOT_AVAILABLE, NOT_COORDINATOR
+or COORDINATOR_LOAD_IN_PROGRESS and an explicit repeat;
+`endtxn_timeout_inflight` expects the resumed call to fail retriable when the
+in-flight EndTxn times out, and a third call to succeed; `switch_coordinator`
+and `switch_coordinator_refresh` repeat commit/abort or send_offsets after a
+retriable NOT_COORDINATOR; `offset_commit_doesnt_retry_too_quickly` uses
+COORDINATOR_LOAD_IN_PROGRESS for the 500 ms retry delay it measures.
+`send_offsets_concurrent_is_retried` and `disconnected_group_coord` (the
+never-transmitted resend) are unchanged. Full 0105 passes with the classic
+group protocol.
+
 ## W17d: configured populations and linear aborted transaction storage
 
 The pinned upstream client creates bootstrap, metadata and coordinator brokers

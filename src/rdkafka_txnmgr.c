@@ -180,7 +180,10 @@ rd_kafka_txn_state_transition_is_valid(rd_kafka_txn_state_t curr,
                 return curr == RD_KAFKA_TXN_STATE_READY;
 
         case RD_KAFKA_TXN_STATE_BEGIN_COMMIT:
-                return curr == RD_KAFKA_TXN_STATE_IN_TRANSACTION;
+                /* COMMITTING_TRANSACTION: an EndTxn that was possibly
+                 * processed and is not sent again (Boundless #308). */
+                return curr == RD_KAFKA_TXN_STATE_IN_TRANSACTION ||
+                       curr == RD_KAFKA_TXN_STATE_COMMITTING_TRANSACTION;
 
         case RD_KAFKA_TXN_STATE_COMMITTING_TRANSACTION:
                 return curr == RD_KAFKA_TXN_STATE_BEGIN_COMMIT;
@@ -1521,6 +1524,32 @@ rd_kafka_txn_send_TxnOffsetCommitRequest(rd_kafka_broker_t *rkb,
                                          rd_kafka_resp_cb_t *resp_cb,
                                          void *reply_opaque);
 
+
+/**
+ * @brief Whether librdkafka may send a failed AddOffsetsToTxn,
+ *        TxnOffsetCommit or EndTxn attempt again (Boundless #308).
+ *
+ * Only an attempt the coordinator cannot have processed is sent again:
+ * one that was never transmitted, or one the coordinator refused before
+ * acting. CONCURRENT_TRANSACTIONS is such a refusal for all three.
+ * COORDINATOR_LOAD_IN_PROGRESS is one only for TxnOffsetCommit: the
+ * transaction coordinator can answer it after a successful log append.
+ * Any other failure goes to the application, which decides whether to
+ * call again. A late original would otherwise act on later work once an
+ * automatic copy lets the transaction move on.
+ *
+ * @locality rdkafka main thread
+ */
+static rd_bool_t rd_kafka_txn_may_resend(const rd_kafka_buf_t *request,
+                                         rd_kafka_resp_err_t err) {
+        if (!rd_kafka_buf_was_sent(request))
+                return rd_true;
+        if (err == RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS)
+                return rd_true;
+        return err == RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS &&
+               request->rkbuf_reqhdr.ApiKey == RD_KAFKAP_TxnOffsetCommit;
+}
+
 /**
  * @brief Handle TxnOffsetCommitResponse
  *
@@ -1668,7 +1697,11 @@ done:
         } else if (actions & RD_KAFKA_ERR_ACTION_RETRY) {
                 int remains_ms = rd_timeout_remains(rko->rko_u.txn.abs_timeout);
 
-                if (!rd_timeout_expired(remains_ms)) {
+                if (rd_timeout_expired(remains_ms)) {
+                        if (!err)
+                                err = RD_KAFKA_RESP_ERR__TIMED_OUT;
+                        actions |= RD_KAFKA_ERR_ACTION_PERMANENT;
+                } else if (rd_kafka_txn_may_resend(request, err)) {
                         rd_kafka_coord_req(
                             rk, RD_KAFKA_COORD_GROUP,
                             rko->rko_u.txn.cgmetadata->group_id,
@@ -1679,9 +1712,10 @@ done:
                             RD_KAFKA_REPLYQ(rk->rk_ops, 0),
                             rd_kafka_txn_handle_TxnOffsetCommit, rko);
                         return;
-                } else if (!err)
-                        err = RD_KAFKA_RESP_ERR__TIMED_OUT;
-                actions |= RD_KAFKA_ERR_ACTION_PERMANENT;
+                }
+                /* Possibly processed and not sent again: the retriable
+                 * result goes to the application and the transaction
+                 * stays usable. */
         }
 
         if (actions & RD_KAFKA_ERR_ACTION_PERMANENT)
@@ -1935,9 +1969,26 @@ done:
                             (int)(request->rkbuf_ts_sent / 1000), remains_ms);
 
                         if (!rd_timeout_expired(remains_ms) &&
+                            rd_kafka_txn_may_resend(request, err) &&
                             rd_kafka_buf_retry(rk->rk_eos.txn_coord, request)) {
                                 rk->rk_eos.txn_req_cnt++;
                                 return;
+                        }
+
+                        /* Not sent again: an attempt the coordinator may
+                         * have appended keeps its participation, so that
+                         * abort_transaction() still sends EndTxn.
+                         * _TRANSPORT and _TIMED_OUT were counted above. */
+                        switch (err) {
+                        case RD_KAFKA_RESP_ERR_NOT_COORDINATOR:
+                        case RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE:
+                        case RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT:
+                        case RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS:
+                        case RD_KAFKA_RESP_ERR_UNKNOWN_TOPIC_OR_PART:
+                                rk->rk_eos.txn_req_cnt++;
+                                break;
+                        default:
+                                break;
                         }
 
                         /* Propagate as retriable error through
@@ -2383,9 +2434,29 @@ err:
                             "%s",
                             rd_kafka_err2str(err));
 
-                } else if (may_retry && actions & RD_KAFKA_ERR_ACTION_RETRY &&
-                           rd_kafka_buf_retry(rkb, request))
-                        return;
+                } else if (may_retry && actions & RD_KAFKA_ERR_ACTION_RETRY) {
+                        if (rd_kafka_txn_may_resend(request, err)) {
+                                if (rd_kafka_buf_retry(rkb, request))
+                                        return;
+                        } else {
+                                /* Possibly processed and not sent again:
+                                 * step back so that the application's next
+                                 * commit_transaction() or abort_transaction()
+                                 * sends a new EndTxn instead of waiting for
+                                 * this one. */
+                                rd_kafka_wrlock(rk);
+                                if (rk->rk_eos.txn_state ==
+                                    RD_KAFKA_TXN_STATE_COMMITTING_TRANSACTION)
+                                        rd_kafka_txn_set_state(
+                                            rk,
+                                            RD_KAFKA_TXN_STATE_BEGIN_COMMIT);
+                                else if (rk->rk_eos.txn_state ==
+                                         RD_KAFKA_TXN_STATE_ABORTING_TRANSACTION)
+                                        rd_kafka_txn_set_state(
+                                            rk, RD_KAFKA_TXN_STATE_BEGIN_ABORT);
+                                rd_kafka_wrunlock(rk);
+                        }
+                }
         }
 
         if (err)
