@@ -1299,7 +1299,7 @@ rd_kafka_handle_OffsetFetch(rd_kafka_t *rk,
                                                                   LeaderEpoch);
                         rktpar->err = err2;
                         rd_kafka_topic_partition_set_broker_reply(rktpar, rkb,
-                                                                 request, err2);
+                                                                 rkbuf, err2);
 
                         rd_rkb_dbg(rkb, TOPIC, "OFFSETFETCH",
                                    "OffsetFetchResponse: %s [%" PRId32
@@ -1357,7 +1357,7 @@ rd_kafka_handle_OffsetFetch(rd_kafka_t *rk,
                 rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
                 if (ErrorCode) {
                         rkbuf->rkbuf_broker_reply = rd_kafka_broker_reply_new(
-                            rkb, request, ErrorCode, wire_group.str ? RD_KAFKA_REPLY_GROUP : RD_KAFKA_REPLY_REQUEST,
+                            rkb, rkbuf, ErrorCode, wire_group.str ? RD_KAFKA_REPLY_GROUP : RD_KAFKA_REPLY_REQUEST,
                             wire_group.str, RD_KAFKAP_STR_LEN(&wire_group),
                             RD_KAFKA_PARTITION_UA, 0, NULL, 0);
                         err = ErrorCode;
@@ -1744,7 +1744,7 @@ rd_kafka_handle_OffsetCommit(rd_kafka_t *rk,
 
                 rktpar->err = partition->err;
                 rd_kafka_topic_partition_set_broker_reply(rktpar, rkb,
-                    request, partition->err);
+                    rkbuf, partition->err);
                 if (partition->err) {
                         err = partition->err;
                         errcnt++;

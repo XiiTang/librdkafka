@@ -168,8 +168,8 @@ and consumer group protocols. The group test 0117 passes with both
 protocols; 0147 and 0148 pass with the consumer protocol and skip with the
 classic one, which they do not support; and 0102's mock subtest passes with the consumer protocol (the
 mock cluster does not implement static membership for the classic one). The
-full local suite (`-l`) passes with both protocols except 0138, whose
-`AlterConsumerGroupOffsets_errors` subtest times out at `d8fbe0cf` as well.
+full local suite (`-l`) passes with both protocols apart from 0138, whose
+failure is the W5-D6 fault corrected below (Boundless #440).
 
 ## W17d: configured populations and linear aborted transaction storage
 
@@ -283,6 +283,33 @@ through name and Display with native CFLAGS `-fsanitize=undefined
 harness explicitly links the Apple Clang UBSan runtime; an initial link without
 that runtime failed before running the test. No sanitizer report occurs in the
 passing run. This remains a focused correction check, not a full native lane.
+
+### W5-D6 correction: reply custody for admin offset results (Boundless #440)
+
+W5-D6 read the API key and version for a partition's or group's reply from
+`request` in the shared `rd_kafka_handle_OffsetCommit` and
+`rd_kafka_handle_OffsetFetch`. The admin parsers
+(`rd_kafka_AlterConsumerGroupOffsetsResponse_parse`,
+`rd_kafka_ListConsumerGroupOffsetsResponse_parse`) call those handlers
+without a request buffer, so a broker error in either admin result
+dereferenced NULL in `rd_kafka_broker_reply_new`: 0138's
+`AlterConsumerGroupOffsets_errors` never got its result (the process faults;
+on macOS it shows as a hang until the runner's timeout). Upstream
+(`e1db7eaa`) passes 0138. W7b was not involved: the admin parser calls the
+handler with `ignore_cgrp`, which never resends.
+
+Both handlers now take that identity from the response they parsed, which
+carries its request's header (`rd_kafka_req_response`), as the admin
+topic/config/group parsers already do. All 35 reply-custody calls were
+checked; only these handlers can see a NULL request. No API, lock or retry
+changes.
+
+Regression, 0138 on macOS arm64 (CMake Debug, static, no SSL/SASL): the
+existing `AlterConsumerGroupOffsets_errors` subtests and the new
+`ListConsumerGroupOffsets_errors` (an injected OffsetFetch
+GROUP_AUTHORIZATION_FAILED reaches the result) pass with the classic and
+consumer group protocols. Before (work-branch test, unfixed source), the new
+subtest got no result until the runner killed it.
 
 ## Boundless #179: complete header-name octets
 

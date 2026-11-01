@@ -53,7 +53,11 @@ struct rd_kafka_error_s {
 };
 
 
-/* Decoder-only construction. Strings are copied with their decoded lengths. */
+/* Decoder-only construction. Strings are copied with their decoded lengths.
+ * \p request names the API key and version: the request itself or its
+ * response, which carries the request's header (rd_kafka_req_response()).
+ * It is never NULL; a handler whose request may be NULL (an admin parser)
+ * passes the response it parsed. */
 rd_kafka_broker_reply_t *rd_kafka_broker_reply_new(
     rd_kafka_broker_t *rkb, const rd_kafka_buf_t *request, int16_t code,
     rd_kafka_reply_target_t target, const char *name, size_t name_size,

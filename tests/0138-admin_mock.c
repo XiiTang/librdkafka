@@ -176,6 +176,68 @@ static void do_test_AlterConsumerGroupOffsets_errors(int req_timeout_ms) {
 }
 
 /**
+ * @brief A broker error returned to ListConsumerGroupOffsets reaches its
+ *        result. The admin parser has no request buffer: the handler takes
+ *        the reply's API identity from the response (Boundless #440).
+ */
+static void do_test_ListConsumerGroupOffsets_errors(void) {
+        rd_kafka_conf_t *conf;
+        rd_kafka_t *rk;
+        rd_kafka_queue_t *q;
+        rd_kafka_mock_cluster_t *mcluster;
+        rd_kafka_topic_partition_list_t *to_list;
+        rd_kafka_ListConsumerGroupOffsets_t *list_grpoffsets;
+        rd_kafka_event_t *rkev;
+        const char *bootstraps;
+        const char *topic = "test";
+
+        SUB_TEST_QUICK();
+
+        test_conf_init(&conf, NULL, 60);
+        mcluster = test_mock_cluster_new(1, &bootstraps);
+        rd_kafka_mock_topic_create(mcluster, topic, 1, 1);
+        test_conf_set(conf, "bootstrap.servers", bootstraps);
+        rk = test_create_handle(RD_KAFKA_CONSUMER, conf);
+        q  = rd_kafka_queue_get_main(rk);
+
+        to_list = rd_kafka_topic_partition_list_new(1);
+        rd_kafka_topic_partition_list_add(to_list, topic, 0);
+        list_grpoffsets = rd_kafka_ListConsumerGroupOffsets_new(topic, to_list);
+        rd_kafka_topic_partition_list_destroy(to_list);
+
+        rd_kafka_mock_push_request_errors(
+            mcluster, RD_KAFKAP_OffsetFetch, 1,
+            RD_KAFKA_RESP_ERR_GROUP_AUTHORIZATION_FAILED);
+        rd_kafka_ListConsumerGroupOffsets(rk, &list_grpoffsets, 1, NULL, q);
+        rd_kafka_ListConsumerGroupOffsets_destroy(list_grpoffsets);
+
+        /* Ignore other event types (typically generic Error events). */
+        while (1) {
+                rkev = rd_kafka_queue_poll(q, tmout_multip(10 * 1000));
+                TEST_SAY("ListConsumerGroupOffsets: got %s\n",
+                         rd_kafka_event_name(rkev));
+                if (rkev == NULL)
+                        continue;
+                if (rd_kafka_event_type(rkev) ==
+                    RD_KAFKA_EVENT_LISTCONSUMERGROUPOFFSETS_RESULT)
+                        break;
+                rd_kafka_event_destroy(rkev);
+        }
+
+        TEST_ASSERT(rd_kafka_event_error(rkev) ==
+                        RD_KAFKA_RESP_ERR_GROUP_AUTHORIZATION_FAILED,
+                    "expected GROUP_AUTHORIZATION_FAILED, not %s",
+                    rd_kafka_err2name(rd_kafka_event_error(rkev)));
+        rd_kafka_event_destroy(rkev);
+
+        rd_kafka_queue_destroy(q);
+        rd_kafka_destroy(rk);
+        test_mock_cluster_destroy(mcluster);
+
+        SUB_TEST_PASS();
+}
+
+/**
  * @brief A leader change should remove metadata cache for a topic
  *        queried in ListOffsets.
  */
@@ -274,6 +336,8 @@ int main_0138_admin_mock(int argc, char **argv) {
 
         do_test_AlterConsumerGroupOffsets_errors(-1);
         do_test_AlterConsumerGroupOffsets_errors(1000);
+
+        do_test_ListConsumerGroupOffsets_errors();
 
         do_test_ListOffsets_leader_change();
 
