@@ -436,6 +436,10 @@ extern int unittest_sasl_oauthbearer_oidc_assertion(void);
 extern int unittest_telemetry(void);
 extern int unittest_telemetry_decode(void);
 extern int unittest_assignment(void);
+extern int unittest_lz4(void);
+#if WITH_ZLIB
+extern int unittest_gzip(void);
+#endif
 
 static int unittest_atomic_exchange(void) {
         rd_atomic32_t a32;
@@ -560,6 +564,10 @@ int rd_unittest(void) {
             {"telemetry_decode", unittest_telemetry_decode},
             {"assignment", unittest_assignment},
             {"atomic_exchange", unittest_atomic_exchange},
+#if WITH_ZLIB
+            {"gzip", unittest_gzip},
+#endif
+            {"lz4", unittest_lz4},
             {"feature", unittest_feature},
             {NULL}};
         int i;

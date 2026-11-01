@@ -43,5 +43,13 @@ void *rd_gz_decompress(const void *compressed,
                        int compressed_len,
                        uint64_t *decompressed_lenp);
 
+/**
+ * Like rd_gz_decompress(), with '*decompressed_lenp' always calculated.
+ * Every gzip member is decoded in order; NULL is returned when the input
+ * ends inside a member, bytes after a member do not start another one, or
+ * the output of all members exceeds 'maximum'.
+ */
 void *rd_gz_decompress_bounded(const void *, int, uint64_t *, uint64_t);
+
+int unittest_gzip(void);
 #endif /* _RDGZ_H_ */

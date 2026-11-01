@@ -295,6 +295,19 @@ rd_kafka_resp_err_t rd_kafka_lz4_decompress(rd_kafka_broker_t *rkb,
                 }
         }
 
+        /* LZ4F_decompress() returns 0 only once the frame is complete, its
+         * end mark and any content checksum read (lz4frame.h). Input that
+         * ran out before then is an unfinished frame (Boundless #442). */
+        if (r != 0) {
+                rd_rkb_dbg(rkb, MSG, "LZ4DEC",
+                           "Failed to LZ4 (%s HC) decompress message "
+                           "(offset %" PRId64
+                           "): frame ends before its end mark "
+                           "after %" PRIusz " bytes",
+                           proper_hc ? "proper" : "legacy", Offset, inlen);
+                err = RD_KAFKA_RESP_ERR__BAD_COMPRESSION;
+                goto done;
+        }
 
         if (in_of < inlen) {
                 rd_rkb_dbg(rkb, MSG, "LZ4DEC",
@@ -452,3 +465,87 @@ done:
 
         return err;
 }
+
+
+
+/**
+ * @name Unit tests (Boundless #442)
+ * @{
+ */
+#include "rdunittest.h"
+
+/** @brief Decodes \p in; returns its error and writes the output length. */
+static rd_kafka_resp_err_t ut_lz4_decode(rd_kafka_broker_t *rkb,
+                                         const char *in,
+                                         size_t len,
+                                         size_t *outlenp) {
+        char *copy = rd_malloc(len);
+        void *out  = NULL;
+        rd_kafka_resp_err_t err;
+        memcpy(copy, in, len);
+        *outlenp = 0;
+        err = rd_kafka_lz4_decompress(rkb, 1, 0, copy, len, &out, outlenp);
+        if (out)
+                rd_free(out);
+        rd_free(copy);
+        return err;
+}
+
+int unittest_lz4(void) {
+        static const char text[] = "record-bytes-0123456789-record-bytes-0123456789";
+        const size_t tlen        = sizeof(text) - 1;
+        const size_t zlen        = 1 << 20;
+        char *zeros              = rd_calloc(1, zlen);
+        size_t cap               = LZ4F_compressFrameBound(zlen, NULL) + 16;
+        char *frame              = rd_malloc(cap);
+        LZ4F_preferences_t prefs = RD_ZERO_INIT;
+        rd_kafka_t *rk = rd_kafka_new(RD_KAFKA_PRODUCER, NULL, NULL, 0);
+        rd_kafka_broker_t *rkb   = rk->rk_internal_rkb;
+        rd_kafka_resp_err_t err;
+        size_t flen, outlen;
+
+        prefs.frameInfo.contentSize = tlen;
+        flen = LZ4F_compressFrame(frame, cap, text, tlen, &prefs);
+        RD_UT_ASSERT(!LZ4F_isError(flen), "compress");
+
+        err = ut_lz4_decode(rkb, frame, flen, &outlen);
+        RD_UT_ASSERT(!err && outlen == tlen, "complete frame: %s, %" PRIusz,
+                     rd_kafka_err2name(err), outlen);
+
+        err = ut_lz4_decode(rkb, frame, flen - 4, &outlen);
+        RD_UT_ASSERT(err == RD_KAFKA_RESP_ERR__BAD_COMPRESSION,
+                     "frame without its end mark: %s", rd_kafka_err2name(err));
+
+        memcpy(frame + flen, "garbage!", 8);
+        err = ut_lz4_decode(rkb, frame, flen + 8, &outlen);
+        RD_UT_ASSERT(err == RD_KAFKA_RESP_ERR__BAD_MSG,
+                     "bytes after the frame: %s", rd_kafka_err2name(err));
+
+        prefs.frameInfo.contentChecksumFlag = LZ4F_contentChecksumEnabled;
+        flen = LZ4F_compressFrame(frame, cap, text, tlen, &prefs);
+        RD_UT_ASSERT(!LZ4F_isError(flen), "compress");
+        err = ut_lz4_decode(rkb, frame, flen, &outlen);
+        RD_UT_ASSERT(!err && outlen == tlen,
+                     "complete checksummed frame: %s", rd_kafka_err2name(err));
+        err = ut_lz4_decode(rkb, frame, flen - 4, &outlen);
+        RD_UT_ASSERT(err == RD_KAFKA_RESP_ERR__BAD_COMPRESSION,
+                     "frame without its content checksum: %s",
+                     rd_kafka_err2name(err));
+
+        /* No content size and a ratio far above the 4x estimate: the output
+         * grows, and the complete frame decodes fully. */
+        memset(&prefs, 0, sizeof(prefs));
+        flen = LZ4F_compressFrame(frame, cap, zeros, zlen, &prefs);
+        RD_UT_ASSERT(!LZ4F_isError(flen), "compress");
+        err = ut_lz4_decode(rkb, frame, flen, &outlen);
+        RD_UT_ASSERT(!err && outlen == zlen,
+                     "frame needing output growth: %s, %" PRIusz,
+                     rd_kafka_err2name(err), outlen);
+
+        rd_kafka_destroy(rk);
+        rd_free(frame);
+        rd_free(zeros);
+        RD_UT_PASS();
+}
+
+/**@}*/

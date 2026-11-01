@@ -327,3 +327,49 @@ values and absent indices. On macOS arm64 at the #179 work-branch source,
 CMake static native build and `TESTS=0000 RD_UT_TEST=header_name_size
 build/tests/test-runner -p1 -Q -l` both exited 0. This is a broker-free getter
 check, not full native/platform acceptance.
+
+## Boundless #442: compressed batches decoded to their end
+
+A Fetch batch's gzip or LZ4 payload yields records only when it decodes to
+its end. Upstream (`e1db7eaa`) and the prior pin decoded only a gzip batch's
+first member, dropping further members and ignoring any bytes after it, and
+`rd_gz_decompress` never returned for a member cut short: pass 2 sizes its
+buffer from pass 1, so a stream without its end met `Z_BUF_ERROR` with
+`avail_out == 0` and its loop spun on the broker thread, which client
+destruction then waits for. `rd_kafka_lz4_decompress` stopped when its input
+ran out, so a frame without its end mark or content checksum was accepted
+(the checksum was never verified).
+
+`rd_gz_decompress_bounded` now decodes every member (RFC 1952 2.2) in both
+passes; a following member is read with gzip-only window bits, while the
+first keeps upstream's gzip/zlib detection. It returns NULL, which the reader
+reports as `_BAD_COMPRESSION`, when the input ends inside a member, when bytes
+after a member do not start one, or when `inflate` can make no progress; its
+`maximum` bounds all members' output together, as `inflateReset2` clears
+`total_out`. `rd_kafka_lz4_decompress` answers `_BAD_COMPRESSION` unless
+`LZ4F_decompress` returned 0, the finished frame (`lz4frame.h`); output growth,
+its receive bound and `_BAD_MSG` for bytes after a finished frame are
+unchanged. The consumer's handling of a failed batch is upstream's: an error
+for the partition at the batch offset, repeated on each fetch.
+
+Mature decoders: the JDK 21 `GZIPInputStream` that Kafka's Java consumer uses
+decodes further members and ignores other bytes after a member;
+CPython's `gzip.decompress` and async-compression (`multiple_members`) decode
+further members and refuse other bytes, as this patch does, and all refuse a
+cut member. Kafka's `Lz4BlockInputStream` refuses a frame without its end
+mark (`PREMATURE_EOS`).
+
+Regression, macOS arm64 (CMake Debug, static, no SSL/SASL):
+`RD_UT_TEST=gzip` (one member; two members in order; a sum over the bound
+refused and at the bound accepted; garbage after a member, a member without
+its trailer, cut inside its deflate data or a second member cut short, and no
+input refused) and `RD_UT_TEST=lz4` (complete frames with and without content
+checksum; without end mark or checksum `_BAD_COMPRESSION`; bytes after the
+frame `_BAD_MSG`; a 1 MiB frame without content size that must grow its
+output decodes fully) pass. Against the previous decoders the gzip unit fails
+at the two members (only the first decoded) and the LZ4 unit at the frame
+without its end mark (accepted). Boundless's
+`protocols::kafka::tests::codecs::a_compressed_batch_reaches_the_program_only_when_decoded_to_its_end`
+drives crafted batches through the Fetch reader. With this patch and #440's
+correction, 0000 (every unit), 0138, 0105 and 0143 pass with the classic and
+consumer group protocols.

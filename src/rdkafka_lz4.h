@@ -46,4 +46,6 @@ rd_kafka_resp_err_t rd_kafka_lz4_compress(rd_kafka_broker_t *rkb,
                                           void **outbuf,
                                           size_t *outlenp);
 
+int unittest_lz4(void);
+
 #endif /* _RDKAFKA_LZ4_H_ */
