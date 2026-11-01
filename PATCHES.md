@@ -164,7 +164,12 @@ retriable NOT_COORDINATOR; `offset_commit_doesnt_retry_too_quickly` uses
 COORDINATOR_LOAD_IN_PROGRESS for the 500 ms retry delay it measures.
 `send_offsets_concurrent_is_retried` and `disconnected_group_coord` (the
 never-transmitted resend) are unchanged. Full 0105 passes with the classic
-group protocol.
+and consumer group protocols. The group test 0117 passes with both
+protocols; 0147 and 0148 pass with the consumer protocol and skip with the
+classic one, which they do not support; and 0102's mock subtest passes with the consumer protocol (the
+mock cluster does not implement static membership for the classic one). The
+full local suite (`-l`) passes with both protocols except 0138, whose
+`AlterConsumerGroupOffsets_errors` subtest times out at `d8fbe0cf` as well.
 
 ## W17d: configured populations and linear aborted transaction storage
 
