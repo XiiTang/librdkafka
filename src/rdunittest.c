@@ -455,6 +455,60 @@ static int unittest_atomic_exchange(void) {
         RD_UT_PASS();
 }
 
+static int unittest_header_name_size(void) {
+        const char invalid[] = {(char)0xff};
+        const char nul_name[] = {'a', 0, 'b'};
+        const char binary[] = {0, (char)0xff};
+        const char *names[] = {invalid, nul_name, "", invalid};
+        const size_t name_sizes[] = {1, 3, 0, 1};
+        const void *values[] = {NULL, binary, "", "v"};
+        const size_t value_sizes[] = {0, 2, 0, 1};
+        rd_kafka_headers_t *headers = rd_kafka_headers_new(4);
+        rd_kafka_headers_t *copies[2];
+        size_t i, copy;
+
+        for (i = 0; i < 4; i++)
+                RD_UT_ASSERT(!rd_kafka_header_add(headers, names[i], name_sizes[i],
+                                                values[i], value_sizes[i]),
+                             "add raw header");
+        copies[0] = headers;
+        copies[1] = rd_kafka_headers_copy(headers);
+        for (copy = 0; copy < 2; copy++) {
+                for (i = 0; i < 4; i++) {
+                        const char *name;
+                        const void *value;
+                        size_t name_size, value_size;
+                        RD_UT_ASSERT(!rd_kafka_header_get_all_with_name_size(
+                                         copies[copy], i, &name, &name_size,
+                                         &value, &value_size), "get raw header");
+                        RD_UT_ASSERT(name_size == name_sizes[i] &&
+                                         !memcmp(name, names[i], name_size),
+                                     "complete name and duplicate order");
+                        RD_UT_ASSERT(value_size == value_sizes[i] &&
+                                         ((value == NULL) == (values[i] == NULL)),
+                                     "null and empty values stay distinct");
+                        if (value)
+                                RD_UT_ASSERT(!memcmp(value, values[i], value_size),
+                                             "complete value");
+                }
+                for (i = 0; i < 2; i++) {
+                        const char *name = "unchanged";
+                        const void *value = binary;
+                        size_t name_size = 42, value_size = 43;
+                        RD_UT_ASSERT(rd_kafka_header_get_all_with_name_size(
+                                         copies[copy], i ? SIZE_MAX : 4, &name,
+                                         &name_size, &value, &value_size) ==
+                                         RD_KAFKA_RESP_ERR__NOENT,
+                                     "absent index");
+                        RD_UT_ASSERT(!strcmp(name, "unchanged") && value == binary &&
+                                         name_size == 42 && value_size == 43,
+                                     "absent index leaves outputs untouched");
+                }
+                rd_kafka_headers_destroy(copies[copy]);
+        }
+        RD_UT_PASS();
+}
+
 int rd_unittest(void) {
         int fails = 0;
         const struct {
@@ -468,6 +522,7 @@ int rd_unittest(void) {
             {"rdvarint", unittest_rdvarint},
             {"crc32c", unittest_rd_crc32c},
             {"msg", unittest_msg},
+            {"header_name_size", unittest_header_name_size},
             {"murmurhash", unittest_murmur2},
             {"fnv1a", unittest_fnv1a},
             {"mock", unittest_mock_cluster},

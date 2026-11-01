@@ -1463,6 +1463,22 @@ rd_kafka_header_get_all(const rd_kafka_headers_t *hdrs,
                         const void **valuep,
                         size_t *sizep);
 
+/**
+ * @brief Borrow a header's complete name bytes and value by index.
+ *
+ * Same semantics as rd_kafka_header_get_all(), with the stored name length
+ * returned in \p name_sizep, excluding its appended terminator. An empty name
+ * has length zero; an embedded NUL is data, not a name delimiter.
+ * The returned pointers are valid only while the list and item remain valid.
+ * All output parameter addresses must be non-NULL. An absent index returns
+ * RD_KAFKA_RESP_ERR__NOENT without writing any output parameter.
+ * This function does not allocate, mutate or transfer ownership.
+ */
+RD_EXPORT rd_kafka_resp_err_t rd_kafka_header_get_all_with_name_size(
+    const rd_kafka_headers_t *hdrs, size_t idx,
+    const char **namep, size_t *name_sizep,
+    const void **valuep, size_t *sizep);
+
 
 
 /**@}*/

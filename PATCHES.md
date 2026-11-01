@@ -169,3 +169,20 @@ through name and Display with native CFLAGS `-fsanitize=undefined
 harness explicitly links the Apple Clang UBSan runtime; an initial link without
 that runtime failed before running the test. No sanitizer report occurs in the
 passing run. This remains a focused correction check, not a full native lane.
+
+## Boundless #179: complete header-name octets
+
+Upstream-derived `rd_kafka_header_get_all` discards the stored name length,
+although `rd_kafka_header_add` and copy retain it. The additive
+`rd_kafka_header_get_all_with_name_size` borrows the same name/value pointers
+and also returns the complete name length, excluding the appended terminator.
+Embedded NUL is data; empty names and null versus empty values are preserved.
+An absent index returns `_NOENT` without writing outputs. Legacy getters,
+storage, codecs, ownership, retry and transport behavior are unchanged.
+
+Regression: `rdunittest.c::unittest_header_name_size` drives add/get/copy/get/
+destroy with invalid UTF-8, NUL, empty and duplicate names, null/empty/binary
+values and absent indices. On macOS arm64 at the #179 work-branch source,
+CMake static native build and `TESTS=0000 RD_UT_TEST=header_name_size
+build/tests/test-runner -p1 -Q -l` both exited 0. This is a broker-free getter
+check, not full native/platform acceptance.
