@@ -396,3 +396,6 @@ it unconditionally: `snappy.c` is always compiled, the generated `config.h`
 defines `WITH_SNAPPY 1`, `BUILT_WITH` lists SNAPPY and the Visual Studio
 project's `win32_config.h` defines it too. Upstream (`e1db7eaa`) keeps the
 undeclared variable. This branch now defines it as 1, as `config.h` does.
+Windows 11 x64 at `3f8ff956` through rust-rdkafka `417ae5f5`: Boundless's
+current Kafka 4.3.1 real-peer suite passes 214 tests, including the
+five-codec test whose Snappy selection had been refused before.
