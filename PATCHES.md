@@ -386,3 +386,13 @@ default, which exceeds 0104's 50 s limit. Upstream's CI runs this suite with
 `CI=true`, which raises the time-limit multiplier; with it, 0104 passes at
 `e1db7eaa` and at `fedec461`. Full local suites under the consumer protocol
 set `CI=true` as upstream does.
+
+Windows CMake builds include Snappy (Boundless #595). With
+`WITHOUT_WIN32_CONFIG`, on by default for CMake on Windows, `src/CMakeLists.txt`
+defined `WITH_SNAPPY` from a CMake variable that nothing declares, so it was
+always 0: producers refused `compression.codec=snappy` ("snappy not enabled at
+build time") and Snappy batches could not be decoded. Every other build enables
+it unconditionally: `snappy.c` is always compiled, the generated `config.h`
+defines `WITH_SNAPPY 1`, `BUILT_WITH` lists SNAPPY and the Visual Studio
+project's `win32_config.h` defines it too. Upstream (`e1db7eaa`) keeps the
+undeclared variable. This branch now defines it as 1, as `config.h` does.
